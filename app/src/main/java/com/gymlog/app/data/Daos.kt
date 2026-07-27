@@ -64,7 +64,7 @@ interface PresetDao {
     // Preset exercises with joined Exercise
     @Query("""
         SELECT pe.id AS presetExerciseId, pe.presetId, pe.defaultWeight, pe.defaultReps,
-               pe.defaultSets, pe.position,
+               pe.defaultSets, pe.position, pe.notes AS presetNotes,
                e.id AS exerciseId, e.name AS exerciseName, e.category AS exerciseCategory,
                e.notes AS exerciseNotes
         FROM preset_exercises pe
@@ -88,6 +88,7 @@ data class PresetExerciseJoined(
     val defaultReps: Int?,
     val defaultSets: Int,
     val position: Int,
+    val presetNotes: String,
     val exerciseId: Long,
     val exerciseName: String,
     val exerciseCategory: ExerciseCategory,

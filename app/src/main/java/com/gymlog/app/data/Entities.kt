@@ -69,7 +69,13 @@ data class PresetExercise(
     val defaultWeight: Double? = null,   // null for body-weight calisthenics / machine-default
     val defaultReps: Int? = null,
     val defaultSets: Int = 3,
-    val position: Int = 0
+    val position: Int = 0,
+    /**
+     * Optional JSON envelope: `gym_log_defaults:{...}` carrying default values for
+     * machine settings (e.g. Speed: 2.8, Incline: 6). The session builder parses
+     * this and seeds the first set's settingsValues when starting a workout from a preset.
+     */
+    val notes: String = ""
 )
 
 /** One logged workout (a session on a date) */

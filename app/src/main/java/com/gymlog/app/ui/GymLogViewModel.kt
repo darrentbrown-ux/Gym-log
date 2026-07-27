@@ -74,6 +74,48 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
+    /**
+     * Variant that takes a `notes` payload (we encode per-exercise default settings JSON in it)
+     * and returns the new PresetExercise's id.
+     */
+    suspend fun addPresetExerciseReturningId(
+        presetId: Long, exerciseId: Long,
+        defaultWeight: Double?, defaultReps: Int?, defaultSets: Int,
+        notes: String
+    ): Long {
+        val nextPos = repo.presetExercises(presetId).first().size
+        return repo.addPresetExercise(
+            PresetExercise(
+                presetId = presetId,
+                exerciseId = exerciseId,
+                defaultWeight = defaultWeight,
+                defaultReps = defaultReps,
+                defaultSets = defaultSets,
+                position = nextPos,
+                notes = notes
+            )
+        )
+    }
+
+    /**
+     * Returns the Exercise.id for an exercise with this name + category. If no row exists,
+     * creates one with the given setting def names attached.
+     */
+    suspend fun ensureExerciseInDb(
+        name: String, category: ExerciseCategory, settingDefNames: List<String>
+    ): Long {
+        val existing = repo.exerciseDao.observeAll().first()
+            .firstOrNull { it.name.equals(name, ignoreCase = true) && it.category == category }
+        if (existing != null) return existing.id
+        val id = repo.addExercise(
+            Exercise(name = name, category = category, notes = "Added from routine edit")
+        )
+        settingDefNames.forEach { n ->
+            repo.addSettingDef(com.gymlog.app.data.MachineSettingDef(exerciseId = id, name = n))
+        }
+        return id
+    }
+
     suspend fun removePresetExercise(pe: PresetExercise) = repo.deletePresetExercise(pe)
 
     // ---- Sessions ----
@@ -90,24 +132,41 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Pre-fill a session from a preset (or build the scaffold with no exercises).
-     * Returns the new session id and the list of created SessionExercise rows
-     * so the UI can navigate to the new session.
+     * Returns the new session id. For each preset exercise, it also creates the
+     * default number of sets (repeating weight/reps) and seeds the first set's
+     * settings-values from the preset's `notes` JSON envelope (if any).
      */
     suspend fun buildSessionFromPreset(name: String, presetId: Long?): Long {
         val now = System.currentTimeMillis()
         val sessionId = createSession(now, name, presetId)
         if (presetId != null) {
-            // read preset_exercises via a one-shot direct query — presetExercises() is a Flow.
-            // Easiest path: fetch via the DAO directly through the repository's preset field.
             val pe = presetExercisesList(presetId)
             pe.forEachIndexed { idx, item ->
-                repo.addSessionExercise(
+                val seId = repo.addSessionExercise(
                     SessionExercise(
                         sessionId = sessionId,
                         exerciseId = item.exerciseId,
                         position = idx
                     )
                 )
+
+                // Pre-populate sets with the preset's defaults (weight, reps, settings).
+                val defaultSettingsJson = parsePresetDefaultsJson(item.presetNotes)
+                val sets = item.defaultSets.coerceAtLeast(1)
+                repeat(sets) { setIdx ->
+                    repo.addSet(
+                        SessionSet(
+                            sessionExerciseId = seId,
+                            setNumber = setIdx + 1,
+                            reps = item.defaultReps,
+                            weight = item.defaultWeight,
+                            settingsValues = if (setIdx == 0) defaultSettingsJson else "{}",
+                            durationSeconds = null,
+                            distance = null,
+                            completed = true
+                        )
+                    )
+                }
             }
         }
         return sessionId
@@ -140,4 +199,18 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Write a complete JSON backup of all user data. */
     suspend fun backupJson(): java.io.File = repo.writeBackup()
+}
+
+/**
+ * Helper used both by the dialog and the session-builder. Stored in the PresetExercise's
+ * `notes` column as `gym_log_defaults:{json}` so we don't need a schema migration for it.
+ */
+private const val PRESET_DEFAULTS_PREFIX = "gym_log_defaults:"
+
+internal fun parsePresetDefaultsJson(notes: String?): String {
+    if (notes.isNullOrBlank()) return "{}"
+    if (!notes.startsWith(PRESET_DEFAULTS_PREFIX)) return "{}"
+    // Return the inner JSON verbatim; SessionSet.settingsValues expects a JSON object.
+    val inner = notes.removePrefix(PRESET_DEFAULTS_PREFIX)
+    return if (inner.trim().startsWith("{")) inner else "{}"
 }

@@ -52,7 +52,16 @@ fun PresetsScreen(navController: NavHostController, padding: PaddingValues) {
     var deleteConfirm by remember { mutableStateOf<Long?>(null) }
 
     Scaffold(
-        topBar = { ScreenTopBar("Routines") },
+        topBar = {
+            ScreenTopBar(
+                title = "Routines",
+                actions = {
+                    IconButton(onClick = { showNew = true }) {
+                        Icon(Icons.Filled.Add, contentDescription = "New routine")
+                    }
+                }
+            )
+        },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { showNew = true },
