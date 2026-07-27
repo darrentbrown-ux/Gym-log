@@ -1,4 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <style name="Theme.GymLog" parent="android:Theme.Material.Light.NoActionBar" />
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+        Base theme. Inherits from Theme.AppCompat.Light.NoActionBar (not the Holo
+        Material one — that one doesn't expose the modern statusBar/navBar
+        attributes needed by Android 12+ / 15+ edge-to-edge).
+
+        API-29+ items (enforce*Contrast) and API-27+ items (windowLayoutInDisplayCutoutMode)
+        are marked with tools:targetApi so lint accepts them on minSdk 26, while the
+        system silently ignores them on devices below the target API.
+    -->
+    <style name="Theme.GymLog" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:enforceNavigationBarContrast" tools:targetApi="29">false</item>
+        <item name="android:enforceStatusBarContrast" tools:targetApi="29">false</item>
+        <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="27">shortEdges</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
 </resources>

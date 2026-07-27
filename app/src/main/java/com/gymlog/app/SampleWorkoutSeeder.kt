@@ -11,7 +11,6 @@ import com.gymlog.app.data.Session
 import com.gymlog.app.data.SessionExercise
 import com.gymlog.app.data.SessionSet
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
 
 /**
  * One-time idempotent seeders.
@@ -26,17 +25,17 @@ object SampleWorkoutSeeder {
     private const val KEY_SEEDED_V1_ROUTINE = "seeded_v1_routine_basic_upper_body"
 
     /** Returns true if any seeding actually ran. */
-    fun runIfNeeded(context: Context): Boolean {
+    suspend fun runIfNeeded(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         var ranAny = false
 
         if (!prefs.getBoolean(KEY_SEEDED_V1_WORKOUT, false)) {
-            runBlocking { seedReferenceWorkout() }
+            seedReferenceWorkout()
             prefs.edit().putBoolean(KEY_SEEDED_V1_WORKOUT, true).apply()
             ranAny = true
         }
         if (!prefs.getBoolean(KEY_SEEDED_V1_ROUTINE, false)) {
-            runBlocking { seedBasicUpperBodyRoutine() }
+            seedBasicUpperBodyRoutine()
             prefs.edit().putBoolean(KEY_SEEDED_V1_ROUTINE, true).apply()
             ranAny = true
         }

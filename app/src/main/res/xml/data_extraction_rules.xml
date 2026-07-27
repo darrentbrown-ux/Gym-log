@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 12+ (API 31+) data extraction rules. Required when the target SDK
+    is 31+; the system warns at install time if the attribute is missing and
+    some test images will refuse to start the app on first launch without it.
+    Mirrors the legacy backup rules.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="root" path="." />
+        <include domain="file" path="." />
+        <include domain="database" path="." />
+        <include domain="sharedpref" path="." />
+        <exclude domain="database" path="gym_log.db" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="root" path="." />
+        <include domain="file" path="." />
+        <include domain="database" path="." />
+        <include domain="sharedpref" path="." />
+        <exclude domain="database" path="gym_log.db" />
+    </device-transfer>
+</data-extraction-rules>

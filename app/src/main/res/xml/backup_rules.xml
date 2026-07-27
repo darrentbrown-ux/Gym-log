@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Legacy Auto Backup rules (Android 6+ but pre-12). Tells the system what to
+    include / exclude when it auto-backs up the app's data to the cloud.
+
+    We include everything (`<include domain="..." path="." />`) and then exclude
+    the Room database file — the schema is versioned and migrating an old DB
+    on a fresh install is safer than restoring one that may be from a different
+    schema version. Lint requires `<exclude>` to be inside an `<include>`.
+-->
+<full-backup-content>
+    <include domain="root" path="." />
+    <include domain="file" path="." />
+    <include domain="database" path="." />
+    <include domain="sharedpref" path="." />
+    <exclude domain="database" path="gym_log.db" />
+</full-backup-content>
