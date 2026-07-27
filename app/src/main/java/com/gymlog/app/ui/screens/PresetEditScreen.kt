@@ -1,8 +1,6 @@
 package com.gymlog.app.ui.screens
 
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,11 +12,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
@@ -30,6 +27,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -98,6 +96,8 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
     val vm: GymLogViewModel = viewModel()
     val scope = rememberCoroutineScope()
     var presetName by remember { mutableStateOf("") }
+    var showRename by remember { mutableStateOf(false) }
+    var renameField by remember { mutableStateOf("") }
     val items by vm.presetExercises(presetId).collectAsState(initial = emptyList())
     val dbExercises by vm.exercises.collectAsState(initial = emptyList())
 
@@ -129,6 +129,14 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                     navController.popBackStack()
                 },
                 actions = {
+                    // Rename button. Opens the same AlertDialog as PresetDetailScreen
+                    // so both flows have a single rename UX.
+                    IconButton(onClick = {
+                        renameField = presetName.removePrefix("Edit: ")
+                        showRename = true
+                    }) {
+                        Icon(Icons.Filled.Edit, contentDescription = "Rename routine")
+                    }
                     // "Done" — returns to the previous screen (Routine screen).
                     // All edits are already persisted inline on every change, so "Done"
                     // just navigates back rather than saving again.
@@ -139,23 +147,43 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
             )
         }
     ) { inner ->
-        Column(modifier = Modifier.fillMaxSize().padding(inner).padding(16.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(inner)
+                .padding(16.dp)
+        ) {
             if (orderedItems.isEmpty()) {
                 EmptyHint("No exercises yet. Tap + Add exercise below.")
             }
-            // Pickup-id for tap-to-swap reorder. Long-press a card → it becomes picked;
-            // tapping another card swaps them; tapping the picked card again cancels.
-            var pickedPresetExerciseId by remember { mutableStateOf<Long?>(null) }
 
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                itemsIndexed(
-                    items = orderedItems,
-                    key = { _, it -> it.presetExerciseId }
-                ) { idx, item ->
-                    val isPicked = item.presetExerciseId == pickedPresetExerciseId
+            // Long-press a card to pick it up, then drag vertically to reorder. We
+            // use a plain Column (not LazyColumn) so the per-card pointerInput for
+            // detectDragGesturesAfterLongPress doesn't fight a LazyList scroll
+            // detector — that was the source of the v1.3.x "drag always snaps back"
+            // bug. Routine lists are typically <30 items, so plain Column with
+            // verticalScroll is fine.
+            val listScroll = rememberScrollState()
+            val draggingId = remember { mutableStateOf<Long?>(null) }
+            // Approximate row height; the cards render a 1-line title plus a 1-line
+            // summary (≈ 64 dp). We swap when the finger has moved at least half a
+            // row past the current position.
+            val rowHeightPx = with(androidx.compose.ui.platform.LocalDensity.current) { 64.dp.toPx() }
+            val swapThreshold = rowHeightPx / 2f
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(listScroll)
+            ) {
+                orderedItems.forEachIndexed { idx, item ->
+                    // Per-row drag accumulator so the swap fires once per half-row
+                    // crossed (rather than firing on every tiny delta).
+                    val cumulative = remember(item.presetExerciseId) { mutableStateOf(0f) }
                     PresetExerciseRow(
                         item = item,
-                        isPicked = isPicked,
+                        isDragging = item.presetExerciseId == draggingId.value,
                         onRemove = {
                             scope.launch {
                                 vm.removePresetExercise(
@@ -166,36 +194,42 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                                     )
                                 )
                                 orderedItems.remove(item)
-                                if (pickedPresetExerciseId == item.presetExerciseId) {
-                                    pickedPresetExerciseId = null
+                                if (draggingId.value == item.presetExerciseId) {
+                                    draggingId.value = null
                                 }
                             }
                         },
-                        onTogglePick = {
-                            pickedPresetExerciseId =
-                                if (isPicked) null else item.presetExerciseId
+                        onDragStart = { draggingId.value = item.presetExerciseId },
+                        onDragEnd = {
+                            draggingId.value = null
+                            cumulative.value = 0f
+                            // Persist the new order to the DB. Each individual swap
+                            // also updates position, but the user may have done a
+                            // single drag that swapped multiple pairs — call once at
+                            // drag-end to be safe.
+                            scope.launch {
+                                vm.reorderPresetExercises(
+                                    presetId,
+                                    orderedItems.map { it.presetExerciseId }
+                                )
+                            }
                         },
-                        onSwapWithPicked = {
-                            val picked = pickedPresetExerciseId
-                            when {
-                                picked == null -> Unit
-                                picked == item.presetExerciseId -> pickedPresetExerciseId = null
-                                else -> {
-                                    val fromIdx = orderedItems.indexOfFirst { it.presetExerciseId == picked }
-                                    val toIdx = idx
-                                    if (fromIdx >= 0 && fromIdx != toIdx) {
-                                        val moving = orderedItems.removeAt(fromIdx)
-                                        orderedItems.add(toIdx, moving)
-                                    }
-                                    pickedPresetExerciseId = null
+                        onDragVertically = { deltaY ->
+                            val fromIdx = orderedItems.indexOfFirst { it.presetExerciseId == item.presetExerciseId }
+                            if (fromIdx < 0) return@PresetExerciseRow
+                            cumulative.value += deltaY
+                            if (kotlin.math.abs(cumulative.value) >= swapThreshold) {
+                                val direction = if (cumulative.value < 0) -1 else 1
+                                val toIdx = (fromIdx + direction).coerceIn(0, orderedItems.lastIndex)
+                                if (toIdx != fromIdx) {
+                                    val moving = orderedItems.removeAt(fromIdx)
+                                    orderedItems.add(toIdx, moving)
                                 }
+                                cumulative.value = 0f
                             }
                         },
                         onEdit = {
                             // Open the same dialog in edit mode, pre-filled from this row.
-                            // Settings defaults are stored in `notes` as a JSON envelope —
-                            // parse them so the dialog starts with the values the user
-                            // previously entered.
                             editingPrefill = ExerciseEditPrefill(
                                 presetExerciseId = item.presetExerciseId,
                                 exerciseId = item.exerciseId,
@@ -206,8 +240,7 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                                 defaultSets = item.defaultSets,
                                 settingsDefaults = parseDefaultsFromNotes(item.presetNotes)
                             )
-                        },
-                        onDragByIndex = { /* unused in tap-to-swap model */ }
+                        }
                     )
                 }
             }
@@ -217,23 +250,6 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
-                    onClick = {
-                        scope.launch {
-                            vm.reorderPresetExercises(
-                                presetId,
-                                orderedItems.map { it.presetExerciseId }
-                            )
-                        }
-                    },
-                    modifier = Modifier.size(40.dp)
-                ) {
-                    Icon(
-                        Icons.Filled.Save,
-                        contentDescription = "Save exercise order"
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
                 Button(onClick = { showAdd = true }) {
                     Icon(Icons.Filled.Add, contentDescription = null)
                     Text("Add exercise", modifier = Modifier.padding(start = 6.dp))
@@ -298,6 +314,38 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
             }
         )
     }
+
+    if (showRename) {
+        AlertDialog(
+            onDismissRequest = { showRename = false },
+            title = { Text("Rename routine") },
+            text = {
+                OutlinedTextField(
+                    value = renameField,
+                    onValueChange = { renameField = it },
+                    label = { Text("Routine name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = renameField.isNotBlank(),
+                    onClick = {
+                        scope.launch {
+                            val current = vm.getPreset(presetId) ?: return@launch
+                            vm.updatePreset(current.copy(name = renameField))
+                            presetName = renameField
+                            showRename = false
+                        }
+                    }
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRename = false }) { Text("Cancel") }
+            }
+        )
+    }
 }
 
 /**
@@ -311,20 +359,21 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
  * current defaults, so the user can tweak weight/reps/sets/settings without removing
  * and re-adding the exercise.
  */
-@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PresetExerciseRow(
     item: com.gymlog.app.data.PresetExerciseJoined,
-    isPicked: Boolean,
+    isDragging: Boolean,
     onRemove: () -> Unit,
-    onTogglePick: () -> Unit,
-    onSwapWithPicked: () -> Unit,
-    onEdit: () -> Unit,
-    onDragByIndex: (direction: Int) -> Unit
+    onDragStart: () -> Unit,
+    onDragEnd: () -> Unit,
+    onDragVertically: (deltaY: Float) -> Unit,
+    onEdit: () -> Unit
 ) {
-    val borderColor = if (isPicked) MaterialTheme.colorScheme.primary
+    val borderColor = if (isDragging) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.outlineVariant
-    val borderWidth = if (isPicked) 2.dp else 1.dp
+    val borderWidth = if (isDragging) 2.dp else 1.dp
+    val rowElevation = if (isDragging) 8.dp else 1.dp
 
     Card(
         modifier = Modifier
@@ -335,27 +384,36 @@ private fun PresetExerciseRow(
                 color = borderColor,
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
             )
+            // Real long-press + drag detection. While dragging, the row gets a coloured
+            // border and elevated shadow. Vertical drag delta is forwarded to the
+            // parent which swaps this row with its neighbour.
             .pointerInput(item.presetExerciseId) {
-                detectTapGestures(
-                    onLongPress = { onTogglePick() }
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { onDragStart() },
+                    onDragEnd = { onDragEnd() },
+                    onDragCancel = { onDragEnd() },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        onDragVertically(dragAmount.y)
+                    }
                 )
-            }
-            .clickable {
-                onSwapWithPicked()
-            }
+            },
+        elevation = CardDefaults.cardElevation(defaultElevation = rowElevation)
     ) {
         Row(
             modifier = Modifier.padding(12.dp).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (isPicked) {
-                Icon(
-                    Icons.Filled.DragIndicator,
-                    contentDescription = "Picked",
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(Modifier.width(8.dp))
-            }
+            // Persistent drag handle on the left so the user knows they can long-press
+            // to drag. The handle tints to the primary colour while the row is being
+            // dragged.
+            Icon(
+                Icons.Filled.DragIndicator,
+                contentDescription = "Drag to reorder",
+                tint = if (isDragging) MaterialTheme.colorScheme.primary
+                       else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(item.exerciseName, style = MaterialTheme.typography.titleMedium)
                 Text(describePresetEntry(item), style = MaterialTheme.typography.bodySmall)
@@ -388,7 +446,7 @@ private fun PresetExerciseRow(
  * move an exercise to a different category via the routine edit; that would be the
  * encyclopedia screen's job).
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun AddExerciseToPresetDialog(
     dbExercises: List<Exercise>,
@@ -463,8 +521,13 @@ private fun AddExerciseToPresetDialog(
                 // Group picker (hidden in EDIT mode).
                 if (prefill == null) {
                     Text("1. Pick a group", style = MaterialTheme.typography.titleSmall)
-                    Row(
+                    // Use FlowRow so on narrow landscape widths (e.g. Android 16 landscape
+                    // emulator @ 2340×10080) all four group chips wrap to a second line
+                    // instead of overflowing off the right edge. The previous plain
+                    // Row layout was clipping the third/fourth chip on those displays.
+                    androidx.compose.foundation.layout.FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         ExerciseCategory.values().forEach { cat ->

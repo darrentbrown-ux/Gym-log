@@ -340,7 +340,7 @@ fun SessionDetailScreen(
  * Mid-workout "Add exercise" dialog. Same group-first UX as the routine-edit Add
  * dialog so the user has one consistent flow for picking exercises.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun AddExerciseToSessionDialog(
     allExercises: List<Exercise>,
@@ -376,8 +376,12 @@ private fun AddExerciseToSessionDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState())
             ) {
                 Text("1. Pick a group", style = MaterialTheme.typography.titleSmall)
-                Row(
+                // FlowRow so on narrow landscape widths all four group chips wrap to a
+                // second line instead of overflowing off the right edge. Matches the
+                // routine-edit dialog so both flows look the same.
+                androidx.compose.foundation.layout.FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     ExerciseCategory.values().forEach { cat ->
@@ -674,10 +678,16 @@ private fun ExerciseLogCard(
 
     var settingsExpanded by remember(detail.sessionExerciseId) { mutableStateOf(false) }
 
-    // When all sets are Done AND we've finished initialising rows, collapse the card to
-    // a single line summary. The user can tap the chevron to expand it back out.
-    var collapsed by remember(detail.sessionExerciseId) { mutableStateOf(false) }
+    // When all sets are Done AND we've finished initialising rows, AUTO-collapse the
+    // card to a single-line summary. The user can tap the header to expand it back
+    // out (e.g. to edit a set or to review the settings). Tapping the header toggles
+    // the override-expand state; unmarking a set (via checkbox) automatically
+    // re-expands because allDone flips back to false.
+    var userExpanded by remember(detail.sessionExerciseId) { mutableStateOf(false) }
     val allDone = hasInitialised && rows.isNotEmpty() && rows.all { it.completed }
+    // Effective expanded state: AUTO-collapsed when allDone is true, unless the
+    // user has explicitly tapped to expand.
+    val expanded = !allDone || userExpanded
 
     fun saveRow(row: SetRowState) = scope.launch {
         val payload = SetRowState.toSet(row, detail.sessionExerciseId)
@@ -699,8 +709,15 @@ private fun ExerciseLogCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            // ----- Header -----
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // ----- Header (clickable to expand/collapse when auto-collapsed) -----
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        if (allDone) userExpanded = !userExpanded
+                    }
+            ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(detail.exerciseName, style = MaterialTheme.typography.titleMedium)
                     if (settingDefs.any { it.value.isNotBlank() }) {
@@ -713,19 +730,13 @@ private fun ExerciseLogCard(
                     }
                 }
                 if (allDone) {
-                    // Single-line "Done" badge with chevron to expand.
+                    // Compact "Done" badge — tapping the header toggles the override-expand.
                     Text(
-                        "Done",
+                        if (expanded) "Done" else "Done — tap to expand",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(end = 4.dp)
                     )
-                    IconButton(onClick = { collapsed = !collapsed }) {
-                        Icon(
-                            if (collapsed) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess,
-                            contentDescription = if (collapsed) "Expand" else "Collapse"
-                        )
-                    }
                 } else {
                     IconButton(onClick = { settingsExpanded = !settingsExpanded }) {
                         Icon(
@@ -749,10 +760,9 @@ private fun ExerciseLogCard(
                 }
             }
 
-            // When all sets are done AND the user has collapsed the card, skip the
-            // settings editor and the set rows — header alone is the visible summary.
-            // The collapse-state toggle (Done + chevron) stays in the header above.
-            if (!(allDone && collapsed)) {
+            // When auto-collapsed and not user-expanded, skip the settings editor and
+            // the set rows — the header alone is the visible summary.
+            if (expanded) {
 
             // ----- Preferred settings editor -----
             if (settingsExpanded && settingDefs.isNotEmpty()) {
@@ -895,7 +905,7 @@ private fun ExerciseLogCard(
                 Spacer(Modifier.width(4.dp))
                 Text("Add set")
             }
-            } // end if (!(allDone && collapsed))
+            } // end if (expanded)
         }
     }
 }

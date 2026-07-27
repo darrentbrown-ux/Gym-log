@@ -80,6 +80,7 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
     val presets = repo.presets()
 
     suspend fun addPreset(name: String): Long = repo.addPreset(Preset(name = name))
+    suspend fun updatePreset(p: Preset) = repo.updatePreset(p)
     suspend fun deletePreset(p: Preset) = repo.deletePreset(p)
     suspend fun getPreset(id: Long) = repo.getPreset(id)
 
@@ -177,16 +178,26 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
                 )
 
                 // Pre-populate sets with the preset's defaults (weight, reps, settings).
-                val defaultSettingsJson = parsePresetDefaultsJson(item.presetNotes)
+                // We honour two envelopes in the `notes` column, in priority order:
+                //   1) gym_log_sets:    — per-set array [{w, r, s?}, ...] (added v1.5.0)
+                //   2) gym_log_defaults:— flat {setting: value, ...} (older envelopes)
+                // If neither is present we fall back to defaultWeight × defaultReps ×
+                // defaultSets with no settings.
+                val perSet = parsePresetSetsJson(item.presetNotes)
+                val defaultSettingsJson = if (perSet == null) parsePresetDefaultsJson(item.presetNotes) else "{}"
                 val sets = item.defaultSets.coerceAtLeast(1)
                 repeat(sets) { setIdx ->
+                    val perSetEntry = perSet?.getOrNull(setIdx)
+                    val setWeight = perSetEntry?.first ?: item.defaultWeight
+                    val setReps = perSetEntry?.second ?: item.defaultReps
+                    val setSettings = perSetEntry?.third ?: defaultSettingsJson
                     repo.addSet(
                         SessionSet(
                             sessionExerciseId = seId,
                             setNumber = setIdx + 1,
-                            reps = item.defaultReps,
-                            weight = item.defaultWeight,
-                            settingsValues = if (setIdx == 0) defaultSettingsJson else "{}",
+                            reps = setReps,
+                            weight = setWeight,
+                            settingsValues = if (setIdx == 0 || perSet != null) setSettings else "{}",
                             durationSeconds = null,
                             distance = null,
                             completed = false
@@ -315,4 +326,36 @@ internal fun parsePresetDefaultsJson(notes: String?): String {
     // Return the inner JSON verbatim; SessionSet.settingsValues expects a JSON object.
     val inner = notes.removePrefix(PRESET_DEFAULTS_PREFIX)
     return if (inner.trim().startsWith("{")) inner else "{}"
+}
+
+/**
+ * Per-set envelope added in v1.5.0 for the Ashley Example routine. Stored as
+ * `gym_log_sets:[{"w":90,"r":12,"s":{"Arm position":"out, lifted"}}, ...]`.
+ *
+ * Returns null if the notes don't carry the envelope, or a list of (weight, reps,
+ * settingsJson) tuples — one per set — if they do. Sets beyond the array length
+ * fall back to the routine's default weight/reps at the call site.
+ */
+internal fun parsePresetSetsJson(notes: String?): List<Triple<Double?, Int?, String>>? {
+    val prefix = "gym_log_sets:"
+    if (notes.isNullOrBlank()) return null
+    val idx = notes.indexOf(prefix)
+    if (idx < 0) return null
+    val array = notes.substring(idx + prefix.length).trim()
+    if (!array.startsWith("[")) return null
+    return try {
+        val json = org.json.JSONArray(array)
+        val out = ArrayList<Triple<Double?, Int?, String>>(json.length())
+        for (i in 0 until json.length()) {
+            val obj = json.optJSONObject(i) ?: continue
+            val w = if (obj.has("w")) obj.getDouble("w") else null
+            val r = if (obj.has("r")) obj.getInt("r") else null
+            val sObj = obj.optJSONObject("s")
+            val s = sObj?.toString() ?: "{}"
+            out.add(Triple(w, r, s))
+        }
+        if (out.isEmpty()) null else out
+    } catch (e: org.json.JSONException) {
+        null
+    }
 }

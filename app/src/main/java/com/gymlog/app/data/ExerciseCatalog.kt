@@ -101,7 +101,10 @@ object ExerciseCatalog {
      */
     fun suggestedSettings(category: ExerciseCategory): List<String> = when (category) {
         ExerciseCategory.WEIGHT_MACHINE -> listOf("Seat height", "Arm position")
-        ExerciseCategory.CARDIO -> listOf("Speed", "Incline", "Duration")
+        // Cardio: Speed + Incline + Duration are the standard machine HUD fields;
+        // Distance is appended so the routine-edit "Defaults" panel includes it
+        // (the workout screen also reads Distance from this same map per set).
+        ExerciseCategory.CARDIO -> listOf("Speed", "Incline", "Duration", "Distance")
         ExerciseCategory.CALISTHENICS -> emptyList()
         ExerciseCategory.FREE_WEIGHTS -> listOf("Arm position")
     }
