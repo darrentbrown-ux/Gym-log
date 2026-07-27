@@ -136,6 +136,35 @@ interface SessionDao {
     @Delete
     suspend fun deleteSet(set: SessionSet)
 
+    /**
+     * Cascade-delete a session and all its contents. Wrapped in a Room @Transaction
+     * so the three DELETE statements run as one atomic unit (no orphan rows visible
+     * to other queries in between). Used by the long-press "Delete workout" action.
+     */
+    @androidx.room.Transaction
+    suspend fun deleteSessionCascade(sessionId: Long) {
+        // 1. Find every session_exercise for this session (one-shot query).
+        val ses = getSessionExercisesForSession(sessionId)
+        // 2. For each session_exercise, delete its sets.
+        for (se in ses) deleteSetsForSessionExercise(se.id)
+        // 3. Delete the session_exercises themselves.
+        deleteSessionExercisesForSession(sessionId)
+        // 4. Delete the session row.
+        deleteSessionById(sessionId)
+    }
+
+    @Query("SELECT * FROM session_exercises WHERE sessionId = :sessionId")
+    suspend fun getSessionExercisesForSession(sessionId: Long): List<SessionExercise>
+
+    @Query("DELETE FROM session_sets WHERE sessionExerciseId = :sessionExerciseId")
+    suspend fun deleteSetsForSessionExercise(sessionExerciseId: Long)
+
+    @Query("DELETE FROM session_exercises WHERE sessionId = :sessionId")
+    suspend fun deleteSessionExercisesForSession(sessionId: Long)
+
+    @Query("DELETE FROM sessions WHERE id = :id")
+    suspend fun deleteSessionById(id: Long)
+
     @Query("SELECT * FROM session_exercises WHERE sessionId = :sessionId ORDER BY position")
     fun observeSessionExercises(sessionId: Long): Flow<List<SessionExercise>>
 

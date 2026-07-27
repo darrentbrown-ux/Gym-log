@@ -33,6 +33,7 @@ fun DropdownField(
     value: String,
     options: List<String>,
     onSelected: (String) -> Unit,
+    enabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -49,10 +50,10 @@ fun DropdownField(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { expanded = true }
+                .clickable(enabled = enabled) { expanded = true }
         )
         DropdownMenu(
-            expanded = expanded,
+            expanded = expanded && enabled,
             onDismissRequest = { expanded = false }
         ) {
             options.forEach { opt ->

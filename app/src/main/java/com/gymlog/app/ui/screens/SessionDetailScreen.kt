@@ -24,7 +24,9 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -44,6 +46,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -55,6 +58,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -73,6 +77,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.gymlog.app.data.Exercise
+import com.gymlog.app.data.ExerciseCatalog
 import com.gymlog.app.data.ExerciseCategory
 import com.gymlog.app.data.MachineSettingDef
 import com.gymlog.app.data.SessionExerciseDetail
@@ -160,11 +165,62 @@ fun SessionDetailScreen(
         }
     }
 
+    // ---- REST timer state ----
+    // The REST button replaces its label with the seconds-remaining countdown while
+    // running. When it reaches 0, the RestAlarm fires off a beep sequence on the IO
+    // dispatcher (handled by `scope`).
+    val defaultRestSec by vm.prefs.restSeconds.collectAsState()
+    var restRunning by remember { mutableStateOf(false) }
+    var restRemaining by remember { mutableStateOf(0) }
+    // Cancellation flag so we can cancel a running timer cleanly if the user taps again.
+    var restJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
+    fun startRest() {
+        if (restRunning) return
+        restRunning = true
+        restRemaining = defaultRestSec
+        restJob = scope.launch {
+            try {
+                while (restRemaining > 0) {
+                    kotlinx.coroutines.delay(1000)
+                    restRemaining -= 1
+                }
+                com.gymlog.app.audio.RestAlarm.beep()
+                snackbar.showSnackbar("Rest complete — back to it!")
+            } finally {
+                restRunning = false
+            }
+        }
+    }
+
+    fun cancelRest() {
+        restJob?.cancel()
+        restJob = null
+        restRunning = false
+    }
+
     Scaffold(
         topBar = {
             ScreenTopBar(
                 title = sessionName,
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                actions = {
+                    // REST button. Label = "REST" when idle; countdown replaces it
+                    // when running. Tap-while-running cancels.
+                    val restLabel = if (restRunning) "${restRemaining}s" else "REST"
+                    TextButton(
+                        onClick = { if (restRunning) cancelRest() else startRest() }
+                    ) {
+                        Text(
+                            restLabel,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (restRunning) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface,
+                            fontWeight = if (restRunning) androidx.compose.ui.text.font.FontWeight.Bold
+                                         else androidx.compose.ui.text.font.FontWeight.Normal
+                        )
+                    }
+                }
             )
         },
         snackbarHost = { SnackbarHost(snackbar) }
@@ -262,40 +318,153 @@ fun SessionDetailScreen(
 
     if (showAddExercise) {
         val allExercises by vm.exercises.collectAsState(initial = emptyList())
-        AlertDialog(
-            onDismissRequest = { showAddExercise = false; pickedExercise = null },
-            title = { Text("Add exercise") },
-            text = {
-                Column {
-                    DropdownField(
-                        label = "Exercise",
-                        value = pickedExercise?.name ?: "Choose…",
-                        options = allExercises.map { it.name },
-                        onSelected = { picked ->
-                            pickedExercise = allExercises.firstOrNull { it.name == picked }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+        AddExerciseToSessionDialog(
+            allExercises = allExercises,
+            onDismiss = { showAddExercise = false; pickedExercise = null },
+            onConfirm = { picked ->
+                // We always have a real Exercise row in the DB by this point (either
+                // a pre-existing one, or a freshly-inserted one from "Other — type
+                // custom name"). vm.addSessionExercise just inserts a SessionExercise
+                // pointing at the existing exercise id.
+                scope.launch {
+                    vm.addSessionExercise(sessionId, picked.id)
+                    pickedExercise = null
+                    showAddExercise = false
                 }
-            },
-            confirmButton = {
-                Button(
-                    enabled = pickedExercise != null,
-                    onClick = {
-                        val ex = pickedExercise ?: return@Button
-                        scope.launch {
-                            vm.addSessionExercise(sessionId, ex.id)
-                            pickedExercise = null
-                            showAddExercise = false
-                        }
-                    }
-                ) { Text("Add") }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { showAddExercise = false }) { Text("Cancel") }
             }
         )
     }
+}
+
+/**
+ * Mid-workout "Add exercise" dialog. Same group-first UX as the routine-edit Add
+ * dialog so the user has one consistent flow for picking exercises.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AddExerciseToSessionDialog(
+    allExercises: List<Exercise>,
+    onDismiss: () -> Unit,
+    onConfirm: (Exercise) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val vm: GymLogViewModel = viewModel()
+    var pickedCategory by remember { mutableStateOf<ExerciseCategory?>(null) }
+    var pickedName by remember { mutableStateOf("") }
+    var pickedLabel by remember { mutableStateOf("") }
+    var isCustomName by remember { mutableStateOf(false) }
+    var customNameField by remember { mutableStateOf("") }
+    var pickedExercise by remember { mutableStateOf<Exercise?>(null) }
+
+    val libraryOptions = remember(pickedCategory) {
+        val cat = pickedCategory ?: return@remember emptyList<String>()
+        val names = ExerciseCatalog.COMMON_BY_CATEGORY[cat].orEmpty()
+        val libraryLower = names.map { it.lowercase() }.toSet()
+        val customDb = allExercises
+            .filter { it.category == cat }
+            .filter { it.name.lowercase() !in libraryLower }
+            .map { "${it.name} ★" }
+        names + customDb + listOf("Other — type custom name…")
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add exercise") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Text("1. Pick a group", style = MaterialTheme.typography.titleSmall)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ExerciseCategory.values().forEach { cat ->
+                        FilterChip(
+                            selected = pickedCategory == cat,
+                            onClick = {
+                                pickedCategory = cat
+                                pickedName = ""
+                                pickedLabel = ""
+                                isCustomName = false
+                                customNameField = ""
+                                pickedExercise = null
+                            },
+                            label = { Text(cat.label) }
+                        )
+                    }
+                }
+
+                if (pickedCategory != null) {
+                    Text("2. Pick an exercise", style = MaterialTheme.typography.titleSmall)
+                    val dropdownValue = when {
+                        isCustomName && customNameField.isNotBlank() -> "$customNameField (custom)"
+                        pickedLabel.isNotBlank() -> pickedLabel
+                        else -> "Choose from ${libraryOptions.size}…"
+                    }
+                    DropdownField(
+                        label = "Exercise",
+                        value = dropdownValue,
+                        options = libraryOptions,
+                        onSelected = { picked ->
+                            if (picked == "Other — type custom name…") {
+                                isCustomName = true
+                                pickedLabel = ""
+                                pickedName = ""
+                                pickedExercise = null
+                            } else {
+                                isCustomName = false
+                                pickedLabel = picked
+                                pickedName = picked.removeSuffix(" ★").trim()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (isCustomName) {
+                        OutlinedTextField(
+                            value = customNameField,
+                            onValueChange = { customNameField = it; pickedName = it },
+                            label = { Text("Custom exercise name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = pickedName.isNotBlank() && pickedCategory != null,
+                onClick = {
+                    val cat = pickedCategory ?: return@Button
+                    val chosenName = pickedName.trim()
+                    if (chosenName.isEmpty()) return@Button
+                    // Resolve or create the Exercise row, then fire onConfirm.
+                    scope.launch {
+                        val resolved = if (isCustomName) {
+                            // Custom name: insert a fresh Exercise, returning its id.
+                            val newId = vm.ensureExerciseInDb(chosenName, cat, emptyList())
+                            allExercises.firstOrNull { it.id == newId }
+                                ?: Exercise(id = newId, name = chosenName, category = cat)
+                        } else {
+                            // Library or DB-only entry — find the existing row.
+                            allExercises.firstOrNull { it.name.equals(chosenName, ignoreCase = true) && it.category == cat }
+                                ?: run {
+                                    // Not in DB yet (e.g. fresh library pick) — insert it.
+                                    val newId = vm.ensureExerciseInDb(chosenName, cat, emptyList())
+                                    Exercise(id = newId, name = chosenName, category = cat)
+                                }
+                        }
+                        onConfirm(resolved)
+                    }
+                }
+            ) { Text("Add") }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 /**
@@ -505,6 +674,11 @@ private fun ExerciseLogCard(
 
     var settingsExpanded by remember(detail.sessionExerciseId) { mutableStateOf(false) }
 
+    // When all sets are Done AND we've finished initialising rows, collapse the card to
+    // a single line summary. The user can tap the chevron to expand it back out.
+    var collapsed by remember(detail.sessionExerciseId) { mutableStateOf(false) }
+    val allDone = hasInitialised && rows.isNotEmpty() && rows.all { it.completed }
+
     fun saveRow(row: SetRowState) = scope.launch {
         val payload = SetRowState.toSet(row, detail.sessionExerciseId)
         val currentId = row.existingId
@@ -538,11 +712,27 @@ private fun ExerciseLogCard(
                         )
                     }
                 }
-                IconButton(onClick = { settingsExpanded = !settingsExpanded }) {
-                    Icon(
-                        if (settingsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = "Edit preferred settings"
+                if (allDone) {
+                    // Single-line "Done" badge with chevron to expand.
+                    Text(
+                        "Done",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(end = 4.dp)
                     )
+                    IconButton(onClick = { collapsed = !collapsed }) {
+                        Icon(
+                            if (collapsed) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess,
+                            contentDescription = if (collapsed) "Expand" else "Collapse"
+                        )
+                    }
+                } else {
+                    IconButton(onClick = { settingsExpanded = !settingsExpanded }) {
+                        Icon(
+                            if (settingsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                            contentDescription = "Edit preferred settings"
+                        )
+                    }
                 }
                 IconButton(onClick = {
                     scope.launch {
@@ -558,6 +748,11 @@ private fun ExerciseLogCard(
                     Icon(Icons.Filled.Close, contentDescription = "Remove exercise")
                 }
             }
+
+            // When all sets are done AND the user has collapsed the card, skip the
+            // settings editor and the set rows — header alone is the visible summary.
+            // The collapse-state toggle (Done + chevron) stays in the header above.
+            if (!(allDone && collapsed)) {
 
             // ----- Preferred settings editor -----
             if (settingsExpanded && settingDefs.isNotEmpty()) {
@@ -604,6 +799,7 @@ private fun ExerciseLogCard(
                         row = row,
                         isCurrent = isCurrent,
                         category = detail.exerciseCategory,
+                        exerciseName = detail.exerciseName,
                         onChanged = { updated ->
                             rows[idx] = updated
                             saveRow(updated)
@@ -630,6 +826,7 @@ private fun ExerciseLogCard(
                     CollapsedSetRow(
                         row = row,
                         category = detail.exerciseCategory,
+                        exerciseName = detail.exerciseName,
                         onToggleComplete = {
                             val next = row.copy(completed = !row.completed)
                             rows[idx] = next
@@ -698,6 +895,7 @@ private fun ExerciseLogCard(
                 Spacer(Modifier.width(4.dp))
                 Text("Add set")
             }
+            } // end if (!(allDone && collapsed))
         }
     }
 }
@@ -706,6 +904,7 @@ private fun ExerciseLogCard(
 private fun CollapsedSetRow(
     row: SetRowState,
     category: ExerciseCategory,
+    exerciseName: String,
     onToggleComplete: () -> Unit,
     onTapToExpand: () -> Unit
 ) {
@@ -726,22 +925,29 @@ private fun CollapsedSetRow(
             modifier = Modifier.padding(end = 8.dp)
         )
         Text(
-            summarize(row, category),
+            summarize(row, category, exerciseName),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
 
-private fun summarize(row: SetRowState, category: ExerciseCategory): String = when (category) {
+private fun summarize(row: SetRowState, category: ExerciseCategory, exerciseName: String = ""): String = when (category) {
     ExerciseCategory.CARDIO -> {
-        val dur = row.durationMin
-        val dist = row.distance
-        when {
-            dur.isNotBlank() && dist.isNotBlank() -> "$dur min · $dist"
-            dur.isNotBlank() -> "$dur min"
-            dist.isNotBlank() -> "$dist"
-            else -> "Tap to fill in"
+        if (exerciseName.equals("Treadmill", ignoreCase = true)) {
+            val speed = row.settings["Speed"]?.takeIf { it.isNotBlank() }?.let { "Speed $it" }
+            val dur = row.durationMin.takeIf { it.isNotBlank() }?.let { "$it min" }
+            val incline = row.settings["Incline"]?.takeIf { it.isNotBlank() }?.let { "Incline $it" }
+            listOfNotNull(speed, dur, incline).joinToString(" · ").takeIf { it.isNotBlank() } ?: "Tap to fill in"
+        } else {
+            val dur = row.durationMin
+            val dist = row.distance
+            when {
+                dur.isNotBlank() && dist.isNotBlank() -> "$dur min · $dist"
+                dur.isNotBlank() -> "$dur min"
+                dist.isNotBlank() -> dist
+                else -> "Tap to fill in"
+            }
         }
     }
     ExerciseCategory.CALISTHENICS -> "${row.reps.ifBlank { "—" }} reps"
@@ -836,6 +1042,7 @@ private fun SetRowEditor(
     row: SetRowState,
     isCurrent: Boolean,
     category: ExerciseCategory,
+    exerciseName: String = "",
     onChanged: (SetRowState) -> Unit,
     onDelete: () -> Unit
 ) {
@@ -868,23 +1075,65 @@ private fun SetRowEditor(
 
         when (category) {
             ExerciseCategory.CARDIO -> {
-                // No Sets-count display, no weight/reps; just duration + distance.
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = row.durationMin,
-                        onValueChange = { onChanged(row.copy(durationMin = it, settings = row.settings)) },
-                        label = { Text("Duration (min)") },
-                        modifier = Modifier.weight(1f).padding(end = 4.dp),
-                        singleLine = true,
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
-                    OutlinedTextField(
-                        value = row.distance,
-                        onValueChange = { onChanged(row.copy(distance = it, settings = row.settings)) },
-                        label = { Text("Distance") },
-                        modifier = Modifier.weight(1f).padding(start = 4.dp),
-                        singleLine = true
-                    )
+                // Treadmill gets Speed + Duration + Incline (the standard treadmill HUD).
+                // Other cardio machines keep Duration + Distance (or Distance alone for
+                // bikes). The user's preferred values are seeded from the routine's
+                // setting-def envelope into `row.settings`.
+                val isTreadmill = exerciseName.equals("Treadmill", ignoreCase = true)
+                if (isTreadmill) {
+                    val speed = row.settings["Speed"].orEmpty()
+                    val incline = row.settings["Incline"].orEmpty()
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = speed,
+                            onValueChange = { v ->
+                                val ns = row.settings.toMutableMap(); ns["Speed"] = v
+                                onChanged(row.copy(settings = ns))
+                            },
+                            label = { Text("Speed") },
+                            modifier = Modifier.weight(1f).padding(end = 4.dp),
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                        OutlinedTextField(
+                            value = row.durationMin,
+                            onValueChange = { onChanged(row.copy(durationMin = it, settings = row.settings)) },
+                            label = { Text("Duration (min)") },
+                            modifier = Modifier.weight(1f).padding(start = 4.dp, end = 4.dp),
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                        OutlinedTextField(
+                            value = incline,
+                            onValueChange = { v ->
+                                val ns = row.settings.toMutableMap(); ns["Incline"] = v
+                                onChanged(row.copy(settings = ns))
+                            },
+                            label = { Text("Incline") },
+                            modifier = Modifier.weight(1f).padding(start = 4.dp),
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                    }
+                } else {
+                    // Generic cardio: Duration + Distance.
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = row.durationMin,
+                            onValueChange = { onChanged(row.copy(durationMin = it, settings = row.settings)) },
+                            label = { Text("Duration (min)") },
+                            modifier = Modifier.weight(1f).padding(end = 4.dp),
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number)
+                        )
+                        OutlinedTextField(
+                            value = row.distance,
+                            onValueChange = { onChanged(row.copy(distance = it, settings = row.settings)) },
+                            label = { Text("Distance") },
+                            modifier = Modifier.weight(1f).padding(start = 4.dp),
+                            singleLine = true
+                        )
+                    }
                 }
             }
             ExerciseCategory.CALISTHENICS -> {

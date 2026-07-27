@@ -25,6 +25,13 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
      */
     val repo: Repository = Repository(app)
 
+    /**
+     * Lightweight user preferences (REST timer default, etc.) backed by
+     * SharedPreferences. Exposed as a StateFlow so the Settings screen and
+     * the workout screen's REST button can observe changes without polling.
+     */
+    val prefs: com.gymlog.app.data.AppPrefs = com.gymlog.app.data.AppPrefs(app)
+
     // ---- Exercise ----
     val exercises: Flow<List<Exercise>> = repo.exercises()
 
@@ -143,7 +150,7 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun createSession(date: Long, name: String, presetId: Long?): Long =
         repo.createSession(Session(date = date, name = name, presetId = presetId))
 
-    suspend fun deleteSession(s: Session) = repo.deleteSession(s)
+    suspend fun deleteSession(s: Session) = repo.deleteSessionCascade(s.id)
     suspend fun getSession(id: Long) = repo.getSession(id)
 
     fun sessionDetail(sessionId: Long) = repo.sessionExercises(sessionId)
@@ -200,6 +207,9 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     suspend fun deleteSessionExercise(se: SessionExercise) = repo.deleteSessionExercise(se)
+
+    /** Cascade-delete a workout by id: its session row AND its session_exercises AND their sets. */
+    suspend fun deleteSession(sessionId: Long) = repo.deleteSessionCascade(sessionId)
 
     suspend fun addSet(sessionExerciseId: Long, set: SessionSet): Long = repo.addSet(set)
     suspend fun updateSet(set: SessionSet) = repo.updateSet(set)
@@ -258,6 +268,39 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Write a complete JSON backup of all user data. */
     suspend fun backupJson(): java.io.File = repo.writeBackup()
+
+    /**
+     * Update the defaults (weight / reps / sets / settings envelope) for an existing
+     * PresetExercise row in place. Used by the Edit Exercise flow on the routine
+     * editor — the user picks an existing exercise and changes its defaults without
+     * removing it from the routine.
+     *
+     * Preserves the `position` so reordering isn't disturbed.
+     */
+    suspend fun updatePresetExerciseDefaults(
+        presetExerciseId: Long,
+        presetId: Long,
+        exerciseId: Long,
+        defaultWeight: Double?,
+        defaultReps: Int?,
+        defaultSets: Int,
+        notes: String
+    ) {
+        val current = repo.presetExercises(presetId).first()
+            .firstOrNull { it.presetExerciseId == presetExerciseId } ?: return
+        repo.updatePresetExercise(
+            PresetExercise(
+                id = presetExerciseId,
+                presetId = presetId,
+                exerciseId = exerciseId,
+                defaultWeight = defaultWeight,
+                defaultReps = defaultReps,
+                defaultSets = defaultSets,
+                position = current.position,
+                notes = notes
+            )
+        )
+    }
 }
 
 /**

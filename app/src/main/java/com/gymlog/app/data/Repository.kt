@@ -55,6 +55,9 @@ class Repository(private val context: Context) {
     suspend fun createSession(s: Session): Long = sessionDao.insertSession(s)
     suspend fun updateSession(s: Session) = sessionDao.updateSession(s)
     suspend fun deleteSession(s: Session) = sessionDao.deleteSession(s)
+
+    /** Cascade-delete a session AND its session_exercises and session_sets. */
+    suspend fun deleteSessionCascade(sessionId: Long) = sessionDao.deleteSessionCascade(sessionId)
     suspend fun getSession(id: Long): Session? = sessionDao.get(id)
     suspend fun addSessionExercise(se: SessionExercise): Long = sessionDao.insertSessionExercise(se)
     suspend fun updateSessionExercise(se: SessionExercise) = sessionDao.updateSessionExercise(se)

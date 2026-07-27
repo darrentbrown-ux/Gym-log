@@ -90,15 +90,37 @@ object ExerciseCatalog {
         return null
     }
 
-    /** Suggested machine settings per category, populated when the user adds an exercise. */
+    /**
+     * Suggested machine settings per category. The user can always edit these
+     * after the exercise is added (each row is just a name; values are entered
+     * per-set on the workout screen or as a per-machine default on the routine).
+     *
+     * The defaults reflect what *most* machines in that category actually have.
+     * For example, every Weight Machine has a seat adjustment; not every one has
+     * a chest-pad adjustment, so we don't suggest that one by default.
+     */
     fun suggestedSettings(category: ExerciseCategory): List<String> = when (category) {
+        ExerciseCategory.WEIGHT_MACHINE -> listOf("Seat height", "Arm position")
         ExerciseCategory.CARDIO -> listOf("Speed", "Incline", "Duration")
         ExerciseCategory.CALISTHENICS -> emptyList()
-        // Most strength machines have seat / arm / back adjustments — but we don't
-        // force them; the user adds what applies.
-        else -> emptyList()
+        ExerciseCategory.FREE_WEIGHTS -> listOf("Arm position")
     }
 
     /** Whether a category typically involves a *weight* value per set. */
     fun usesWeight(category: ExerciseCategory): Boolean = category != ExerciseCategory.CALISTHENICS
+
+    /** Whether a category typically involves a *duration* (seconds) value per set. */
+    fun usesDuration(category: ExerciseCategory): Boolean = category == ExerciseCategory.CARDIO
+
+    /**
+     * Setting *names* used as the user-facing "cardio machine" fields.
+     * We expose these as constants so the workout screen can read them
+     * without depending on the catalog from elsewhere.
+     */
+    object CardioFieldNames {
+        const val SPEED = "Speed"
+        const val INCLINE = "Incline"
+        const val DURATION = "Duration"
+        const val DISTANCE = "Distance"
+    }
 }

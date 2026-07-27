@@ -21,6 +21,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -50,9 +51,18 @@ fun NewSessionScreen(navController: NavHostController, padding: PaddingValues, p
     // Pre-selected preset (passed in from a "Start from this routine" button)
     var selectedPresetId by remember { mutableStateOf(presetId) }
     var expanded by remember { mutableStateOf(false) }
-    val defaultName = if (presetId != null) presets.firstOrNull { it.id == presetId }?.name.orEmpty()
-        else ""
-    var name by remember { mutableStateOf(defaultName) }
+    var name by remember { mutableStateOf("") }
+    // When the preset list arrives, default the session name to the preset name (only
+    // if the user hasn't typed anything yet). This used to be a one-shot initial value
+    // captured in `remember`, but `presets` starts as `emptyList()` from
+    // `collectAsState(initial=...)`, so the first composition always produced "" and
+    // `name` got stuck on "". A `LaunchedEffect` that reacts when presets arrive fixes
+    // it.
+    LaunchedEffect(presets, presetId) {
+        if (name.isNotBlank() || presetId == null) return@LaunchedEffect
+        val preset = presets.firstOrNull { it.id == presetId } ?: return@LaunchedEffect
+        name = preset.name
+    }
     val dateLabel = remember {
         SimpleDateFormat("EEE, MMM d, yyyy • h:mm a", Locale.getDefault())
             .format(Date())

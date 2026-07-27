@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,11 +23,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragIndicator
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -72,6 +77,21 @@ data class PickedExerciseSpec(
     val settingsDefaults: Map<String, String>
 )
 
+/**
+ * State passed in to pre-fill the AddExerciseToPresetDialog when EDITING an existing
+ * PresetExercise. When null, the dialog starts fresh (the Add flow).
+ */
+data class ExerciseEditPrefill(
+    val presetExerciseId: Long,
+    val exerciseId: Long,
+    val name: String,
+    val category: ExerciseCategory,
+    val defaultWeight: Double?,
+    val defaultReps: Int?,
+    val defaultSets: Int,
+    val settingsDefaults: Map<String, String>
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, presetId: Long) {
@@ -86,6 +106,7 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
     }
 
     var showAdd by remember { mutableStateOf(false) }
+    var editingPrefill by remember { mutableStateOf<ExerciseEditPrefill?>(null) }
 
     // Local ordering so we can do drag-reorder visually, then persist with "Save order".
     val orderedItems = remember { mutableStateListOf<com.gymlog.app.data.PresetExerciseJoined>() }
@@ -100,12 +121,17 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
         topBar = {
             ScreenTopBar(
                 "Edit: $presetName",
-                onBack = { navController.popBackStack() },
+                onBack = {
+                    // Pop back to the previous screen, which is the Routine detail screen
+                    // (the user navigated Edit ← Routine). Using `popBackStack` (no args)
+                    // returns us there; we don't need an explicit destination because the
+                    // detail screen sits directly on the back stack.
+                    navController.popBackStack()
+                },
                 actions = {
-                    // "Done" — returns to the previous screen. All edits are already
-                    // persisted (we save inline on every change), so "Done" just navigates
-                    // back rather than saving again. The Save-order button below persists
-                    // the user-driven reorder.
+                    // "Done" — returns to the previous screen (Routine screen).
+                    // All edits are already persisted inline on every change, so "Done"
+                    // just navigates back rather than saving again.
                     TextButton(onClick = { navController.popBackStack() }) {
                         Text("Done")
                     }
@@ -146,15 +172,13 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                             }
                         },
                         onTogglePick = {
-                            // Long-press toggles pickup. If a different row is already
-                            // picked, cancel that and pick this one instead.
                             pickedPresetExerciseId =
                                 if (isPicked) null else item.presetExerciseId
                         },
                         onSwapWithPicked = {
                             val picked = pickedPresetExerciseId
                             when {
-                                picked == null -> Unit  // tap on its own does nothing
+                                picked == null -> Unit
                                 picked == item.presetExerciseId -> pickedPresetExerciseId = null
                                 else -> {
                                     val fromIdx = orderedItems.indexOfFirst { it.presetExerciseId == picked }
@@ -167,6 +191,22 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                                 }
                             }
                         },
+                        onEdit = {
+                            // Open the same dialog in edit mode, pre-filled from this row.
+                            // Settings defaults are stored in `notes` as a JSON envelope —
+                            // parse them so the dialog starts with the values the user
+                            // previously entered.
+                            editingPrefill = ExerciseEditPrefill(
+                                presetExerciseId = item.presetExerciseId,
+                                exerciseId = item.exerciseId,
+                                name = item.exerciseName,
+                                category = item.exerciseCategory,
+                                defaultWeight = item.defaultWeight,
+                                defaultReps = item.defaultReps,
+                                defaultSets = item.defaultSets,
+                                settingsDefaults = parseDefaultsFromNotes(item.presetNotes)
+                            )
+                        },
                         onDragByIndex = { /* unused in tap-to-swap model */ }
                     )
                 }
@@ -177,7 +217,6 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Save order icon-only, shown only when order was changed AND there's a preset.
                 IconButton(
                     onClick = {
                         scope.launch {
@@ -206,6 +245,7 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
     if (showAdd) {
         AddExerciseToPresetDialog(
             dbExercises = dbExercises,
+            prefill = null,
             onDismiss = { showAdd = false },
             onConfirm = { spec ->
                 scope.launch {
@@ -214,7 +254,7 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                         category = spec.category,
                         settingDefNames = suggestedSettingNames(spec.name, spec.category)
                     )
-                    val newId = vm.addPresetExerciseReturningId(
+                    vm.addPresetExerciseReturningId(
                         presetId = presetId,
                         exerciseId = exerciseId,
                         defaultWeight = spec.defaultWeight,
@@ -222,14 +262,38 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                         defaultSets = spec.defaultSets,
                         notes = encodeDefaultsInNotes(spec.settingsDefaults)
                     )
-                    // Refresh the local ordered list so the new row appears immediately.
-                    // We pull the upstream Flow's current value (not a never-terminating
-                    // `flow.collect { … }`, which used to hang here forever and prevent
-                    // `showAdd = false` from ever running — meaning the dialog stayed open).
                     val refreshed = vm.presetExercisesList(presetId)
                     orderedItems.clear()
                     orderedItems.addAll(refreshed)
                     showAdd = false
+                }
+            }
+        )
+    }
+
+    editingPrefill?.let { prefill ->
+        AddExerciseToPresetDialog(
+            dbExercises = dbExercises,
+            prefill = prefill,
+            onDismiss = { editingPrefill = null },
+            onConfirm = { spec ->
+                scope.launch {
+                    // For EDIT mode we update the existing PresetExercise row in place
+                    // rather than inserting a new one. The exerciseId stays the same
+                    // (the user can't rename the exercise here — that's the encyclopedia).
+                    vm.updatePresetExerciseDefaults(
+                        presetExerciseId = prefill.presetExerciseId,
+                        presetId = presetId,
+                        exerciseId = prefill.exerciseId,
+                        defaultWeight = spec.defaultWeight,
+                        defaultReps = spec.defaultReps,
+                        defaultSets = spec.defaultSets,
+                        notes = encodeDefaultsInNotes(spec.settingsDefaults)
+                    )
+                    val refreshed = vm.presetExercisesList(presetId)
+                    orderedItems.clear()
+                    orderedItems.addAll(refreshed)
+                    editingPrefill = null
                 }
             }
         )
@@ -242,11 +306,10 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
  * Reorder interaction (the reliable one):
  *   - Long-press the card — it becomes "picked" with a coloured border.
  *   - Tap another card to swap positions with it. Tap the picked card again to cancel.
- *   - Long-press a card while one is already picked also cancels.
  *
- * The previous version tried long-press + continuous horizontal drag, which fought with
- * the parent LazyColumn and the row visually snapped back to its slot after each swap.
- * Tap-to-swap is predictable and works in any list layout.
+ * Edit interaction: tap the pencil icon to open the dialog pre-filled with this row's
+ * current defaults, so the user can tweak weight/reps/sets/settings without removing
+ * and re-adding the exercise.
  */
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -256,6 +319,7 @@ private fun PresetExerciseRow(
     onRemove: () -> Unit,
     onTogglePick: () -> Unit,
     onSwapWithPicked: () -> Unit,
+    onEdit: () -> Unit,
     onDragByIndex: (direction: Int) -> Unit
 ) {
     val borderColor = if (isPicked) MaterialTheme.colorScheme.primary
@@ -296,6 +360,9 @@ private fun PresetExerciseRow(
                 Text(item.exerciseName, style = MaterialTheme.typography.titleMedium)
                 Text(describePresetEntry(item), style = MaterialTheme.typography.bodySmall)
             }
+            IconButton(onClick = onEdit) {
+                Icon(Icons.Filled.Edit, contentDescription = "Edit")
+            }
             IconButton(onClick = onRemove) {
                 Icon(Icons.Filled.Close, contentDescription = "Remove")
             }
@@ -304,96 +371,182 @@ private fun PresetExerciseRow(
 }
 
 /**
- * Dialog that lets the user pick from the *entire* library (50+ common exercises across
- * 4 categories) plus any custom exercises they've added. After picking, fills default
- * weight/reps/sets and per-setting default values, which are saved on the PresetExercise.
+ * Add (or edit) an exercise in a routine.
+ *
+ * UX:
+ *   1. The user picks a *category first* via a row of FilterChips. This is the
+ *      primary navigation — the dropdown shows only exercises from the chosen group
+ *      plus "Other" for custom-name entry.
+ *   2. After picking a category, the dropdown is filled with that category's exercises.
+ *   3. The user picks (or types) a name. Then default weight/reps/sets + per-setting
+ *      defaults appear.
+ *   4. Submit.
+ *
+ * When `prefill` is non-null, the dialog is in EDIT mode — the category is locked to
+ * the pre-filled one, the dropdown shows its name preselected, and the submit button
+ * reads "Save changes". The category chips are hidden in this mode (the user can't
+ * move an exercise to a different category via the routine edit; that would be the
+ * encyclopedia screen's job).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AddExerciseToPresetDialog(
     dbExercises: List<Exercise>,
+    prefill: ExerciseEditPrefill?,
     onDismiss: () -> Unit,
     onConfirm: (PickedExerciseSpec) -> Unit
 ) {
-    val libraryOptions = remember {
-        ExerciseCategory.values().flatMap { cat ->
-            ExerciseCatalog.LIBRARY_BY_CATEGORY[cat].orEmpty().map { "${it.name} (${cat.label})" }
-        }.distinctBy { it.lowercase() }.sortedBy { it.lowercase() }
+    // Selected group.  In EDIT mode, locked to the pre-fill's category.
+    var pickedCategory by remember { mutableStateOf<ExerciseCategory?>(prefill?.category) }
+
+    // Exercise name. In EDIT mode, locked to the pre-fill's name.
+    var pickedName by remember { mutableStateOf(prefill?.name.orEmpty()) }
+    // Display string for the dropdown (includes "Other" marker when the user is typing
+    // a custom name).
+    var pickedLabel by remember { mutableStateOf(prefill?.name.orEmpty()) }
+    // True if the user is manually typing a custom name (not from the library).
+    var isCustomName by remember { mutableStateOf(false) }
+
+    var defWeight by remember {
+        mutableStateOf(prefill?.defaultWeight?.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }.orEmpty())
     }
-    val customOptions = remember(dbExercises) {
-        // Only show DB entries that aren't already represented in the library
-        val libraryLower = libraryOptions.map { it.lowercase() }.toSet()
-        dbExercises
-            .filter { "${it.name} (${it.category.label})".lowercase() !in libraryLower }
-            .map { "${it.name} (${it.category.label}) ★" }
-            .sortedBy { it.lowercase() }
+    var defReps by remember { mutableStateOf(prefill?.defaultReps?.toString().orEmpty()) }
+    var defSets by remember {
+        mutableStateOf(
+            prefill?.let { if (it.category == ExerciseCategory.CARDIO) "" else it.defaultSets.toString() }
+                ?: ""
+        )
     }
-    val allOptions = remember(libraryOptions, customOptions) {
-        (libraryOptions + customOptions)
+    val settingsVals = remember {
+        mutableStateListOf<Pair<String, String>>().apply {
+            val initialNames = prefill?.let { it.settingsDefaults.keys.toList() }
+                ?: emptyList()
+            val defaults = prefill?.settingsDefaults ?: emptyMap()
+            initialNames.forEach { add(it to (defaults[it].orEmpty())) }
+        }
+    }
+    var customNameField by remember { mutableStateOf("") }
+
+    // When the user picks a category, seed settings rows from the catalog defaults
+    // (unless we're in EDIT mode with pre-fill — those already have their values).
+    LaunchedEffect(pickedCategory) {
+        if (prefill != null) return@LaunchedEffect
+        val cat = pickedCategory ?: return@LaunchedEffect
+        val names = ExerciseCatalog.suggestedSettings(cat)
+        if (settingsVals.isEmpty()) {
+            names.forEach { settingsVals.add(it to "") }
+        }
     }
 
-    var pickedLabel by remember { mutableStateOf("") }
-    var pickedCategory by remember { mutableStateOf<ExerciseCategory?>(null) }
-    var pickedName by remember { mutableStateOf("") }
-    var defWeight by remember { mutableStateOf("") }
-    var defReps by remember { mutableStateOf("") }
-    // Cardio doesn't use "sets"; defaults to blank (so a Treadmill routine item has no
-    // meaningless "3 sets" attached to it).
-    var defSets by remember { mutableStateOf("") }
-    val settingsVals = remember { mutableStateListOf<Pair<String, String>>() }
+    // Build dropdown options filtered by category. We always add an "Other" option
+    // that switches the field into free-text mode.
+    val libraryOptions = remember(pickedCategory) {
+        val cat = pickedCategory ?: return@remember emptyList<String>()
+        val names = ExerciseCatalog.COMMON_BY_CATEGORY[cat].orEmpty()
+        // Plus DB-only entries in the same category.
+        val libraryLower = names.map { it.lowercase() }.toSet()
+        val customDb = dbExercises
+            .filter { it.category == cat }
+            .filter { it.name.lowercase() !in libraryLower }
+            .map { "${it.name} ★" }
+        names + customDb + listOf("Other — type custom name…")
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add exercise to routine") },
+        title = { Text(if (prefill != null) "Edit exercise defaults" else "Add exercise to routine") },
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.verticalScroll(rememberScrollState())
             ) {
-                DropdownField(
-                    label = "Exercise (library + any custom)",
-                    value = if (pickedLabel.isBlank()) "Choose from ${allOptions.size} exercises\u2026" else pickedLabel,
-                    options = allOptions,
-                    onSelected = { picked ->
-                        pickedLabel = picked
-                        // Parse "Name (Category)" suffix; ★ indicates a custom DB-only row.
-                        val cleaned = picked.removeSuffix(" \u2605")
-                        val match = Regex("^(.*?) \\((.*?)\\)$").find(cleaned)
-                        val n = match?.groupValues?.get(1)?.trim() ?: cleaned
-                        val catLabel = match?.groupValues?.get(2)?.trim()
-                        val cat = ExerciseCategory.values().firstOrNull { it.label == catLabel }
-                            ?: ExerciseCategory.WEIGHT_MACHINE
-                        pickedName = n
-                        pickedCategory = cat
+                // Group picker (hidden in EDIT mode).
+                if (prefill == null) {
+                    Text("1. Pick a group", style = MaterialTheme.typography.titleSmall)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        ExerciseCategory.values().forEach { cat ->
+                            FilterChip(
+                                selected = pickedCategory == cat,
+                                onClick = {
+                                    pickedCategory = cat
+                                    pickedName = ""
+                                    pickedLabel = ""
+                                    isCustomName = false
+                                },
+                                label = { Text(cat.label) }
+                            )
+                        }
+                    }
+                }
 
-                        // Seed settings rows from whichever source fires first:
-                        //  - the existing DB Exercise's MachineSettingDefs (looked up by dbExercises)
-                        //  - otherwise the catalog's suggested settings for this category + name
-                        val dbRow = dbExercises.firstOrNull { it.name.equals(n, ignoreCase = true) && it.category == cat }
-                        // We don't have MachineSettingDefs here; query them async via the VM
-                        // would be cleaner but for now use the catalog heuristic. The dialog
-                        // shows the *name* fields the user *can* fill; the actual stored defs
-                        // are created on Confirm if the row is brand-new.
-                        val names = suggestedSettingNames(n, cat)
-                        settingsVals.clear()
-                        names.forEach { settingsVals.add(it to "") }
+                if (pickedCategory != null) {
+                    Text(
+                        if (prefill == null) "2. Pick an exercise" else "Exercise",
+                        style = MaterialTheme.typography.titleSmall
+                    )
 
-                        // Reset form fields when picking a new exercise. Strength/calisthenics
-                        // default to 3 sets; cardio leaves it blank (duration suffices).
-                        defWeight = ""
-                        defReps = ""
-                        defSets = if (cat == ExerciseCategory.CARDIO) "" else "3"
-                        if (dbRow == null) Unit // can't prefill weights from DB without a setter
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                    val dropdownValue = when {
+                        isCustomName && customNameField.isNotBlank() ->
+                            "$customNameField (custom)"
+                        pickedLabel.isNotBlank() -> pickedLabel
+                        else -> "Choose from ${libraryOptions.size}…"
+                    }
+
+                    DropdownField(
+                        label = "Exercise",
+                        value = dropdownValue,
+                        options = libraryOptions,
+                        enabled = prefill == null,  // lock in edit mode
+                        onSelected = { picked ->
+                            if (picked == "Other — type custom name…") {
+                                isCustomName = true
+                                pickedLabel = ""
+                                pickedName = ""
+                            } else {
+                                isCustomName = false
+                                pickedLabel = picked
+                                val cleaned = picked.removeSuffix(" ★")
+                                pickedName = cleaned.trim()
+                            }
+                            // Re-seed settings rows for the new category.
+                            if (prefill == null && pickedCategory != null) {
+                                val names = ExerciseCatalog.suggestedSettings(pickedCategory!!)
+                                settingsVals.clear()
+                                names.forEach { settingsVals.add(it to "") }
+                            }
+                            // Reset form fields on switch.
+                            defWeight = ""
+                            defReps = ""
+                            defSets = if (pickedCategory == ExerciseCategory.CARDIO) "" else "3"
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    if (isCustomName) {
+                        OutlinedTextField(
+                            value = customNameField,
+                            onValueChange = { customNameField = it; pickedName = it },
+                            label = { Text("Custom exercise name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
 
                 if (pickedName.isNotBlank() && pickedCategory != null) {
                     val cat = pickedCategory!!
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-                    // Cardio uses duration + per-machine settings, never weight/reps.
-                    if (cat != ExerciseCategory.CARDIO && cat != ExerciseCategory.CALISTHENICS) {
+                    Text(
+                        if (prefill == null) "3. Defaults (pre-fill new sets)" else "Defaults",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+
+                    // Weight field for non-calisthenics, non-cardio (i.e. weight-machine + free-weights).
+                    if (ExerciseCatalog.usesWeight(cat) && cat != ExerciseCategory.CARDIO) {
                         OutlinedTextField(
                             value = defWeight,
                             onValueChange = { defWeight = it },
@@ -403,16 +556,18 @@ private fun AddExerciseToPresetDialog(
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
-                    // Calisthenics has reps but no weight.
-                    OutlinedTextField(
-                        value = defReps,
-                        onValueChange = { defReps = it },
-                        label = { Text("Default reps") },
-                        singleLine = true,
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    // Cardio uses Duration + speed/incline, never "sets".
+                    // Reps for non-cardio.
+                    if (cat != ExerciseCategory.CARDIO) {
+                        OutlinedTextField(
+                            value = defReps,
+                            onValueChange = { defReps = it },
+                            label = { Text("Default reps") },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    // Sets for non-cardio.
                     if (cat != ExerciseCategory.CARDIO) {
                         OutlinedTextField(
                             value = defSets,
@@ -424,17 +579,20 @@ private fun AddExerciseToPresetDialog(
                         )
                     }
 
-                    if (settingsVals.isNotEmpty()) {
+                    // Settings rows: for WEIGHT_MACHINE → Seat height / Arm position;
+                    // for CARDIO → Speed / Incline / Duration; etc.
+                    val settings = settingsVals.toList()
+                    if (settings.isNotEmpty()) {
                         Text(
                             "Settings defaults",
                             style = MaterialTheme.typography.titleSmall
                         )
                         Text(
-                            "Type the values you want pre-filled for new sets of this exercise.",
+                            "Pre-filled values you want for new sets of this exercise.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        settingsVals.forEachIndexed { idx, (name, value) ->
+                        settings.forEachIndexed { idx, (name, value) ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
                                     name,
@@ -450,13 +608,6 @@ private fun AddExerciseToPresetDialog(
                                 )
                             }
                         }
-                    } else {
-                        Text(
-                            "This exercise has no predefined settings. " +
-                                "You can add setting fields by editing the exercise after creating it.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
                     }
                 }
             }
@@ -480,7 +631,7 @@ private fun AddExerciseToPresetDialog(
                         )
                     )
                 }
-            ) { Text("Add") }
+            ) { Text(if (prefill != null) "Save changes" else "Add") }
         },
         dismissButton = {
             OutlinedButton(onClick = onDismiss) { Text("Cancel") }
@@ -503,58 +654,73 @@ private fun suggestedSettingNames(name: String, category: ExerciseCategory): Lis
 /** Encode a defaults map as a JSON-prefix envelope stored in the PresetExercise.notes column. */
 private fun encodeDefaultsInNotes(defaults: Map<String, String>): String {
     if (defaults.isEmpty()) return ""
-    val obj = org.json.JSONObject()
-    defaults.forEach { (k, v) -> obj.put(k, v) }
-    return "gym_log_defaults:${obj.toString()}"
+    val body = defaults.entries.joinToString(",") { (k, v) ->
+        "\"${escapeJson(k)}\":\"${escapeJson(v)}\""
+    }
+    return "gym_log_defaults:{$body}"
 }
 
-/**
- * Human-friendly description for the routine list — adapts to category:
- *   CARDIO       → "Speed 2.8 / Incline 6 / 10 min"
- *   CALISTHENICS → "12 reps • 3 sets"
- *   strength     → "100 lb × 15 reps • 3 sets"
- * Appends a defaults line for any saved setting defaults.
- */
+/** Decode the JSON envelope produced by [encodeDefaultsInNotes]. */
+internal fun parseDefaultsFromNotes(notes: String?): Map<String, String> {
+    val raw = notes?.takeIf { it.isNotBlank() }?.let { n ->
+        val idx = n.indexOf("gym_log_defaults:")
+        if (idx < 0) null else n.substring(idx + "gym_log_defaults:".length).trim()
+    } ?: return emptyMap()
+    if (!raw.startsWith("{") || !raw.endsWith("}")) return emptyMap()
+    val inner = raw.substring(1, raw.length - 1)
+    if (inner.isBlank()) return emptyMap()
+    val out = mutableMapOf<String, String>()
+    val re = Regex("\"([^\"]*)\"\\s*:\\s*\"([^\"]*)\"")
+    re.findAll(inner).forEach { m ->
+        out[m.groupValues[1]] = m.groupValues[2]
+    }
+    return out
+}
+
+private fun escapeJson(s: String): String =
+    s.replace("\\", "\\\\").replace("\"", "\\\"")
+
+/** Returns a one-line summary of a PresetExercise for the routine list. */
 private fun describePresetEntry(item: com.gymlog.app.data.PresetExerciseJoined): String {
-    val defaults = parseDefaultsFromNotes(item.presetNotes ?: "")
+    val defaults = parseDefaultsFromNotes(item.presetNotes)
     val main = when (item.exerciseCategory) {
-        ExerciseCategory.CARDIO -> {
-            val speed = defaults["Speed"] ?: defaults["Resistance"] ?: "—"
-            val incline = defaults["Incline"]
-            buildList {
-                add("Speed $speed")
-                if (incline != null) add("Incline $incline")
-            }.joinToString(" / ")
-        }
+        ExerciseCategory.CARDIO -> buildString {
+            val speed = defaults["Speed"] ?: item.presetNotesSpeedFallback()
+            val incline = defaults["Incline"] ?: item.presetNotesInclineFallback()
+            if (speed.isNotBlank()) append("Speed ").append(speed)
+            if (incline.isNotBlank()) {
+                if (isNotEmpty()) append(" · ")
+                append("Incline ").append(incline)
+            }
+            if (isNotBlank() && item.defaultSets > 1) {
+                // Cardio usually has 1 set (one duration row) but keep display for legacy data.
+                append(" · ").append(item.defaultSets).append(" set").append(if (item.defaultSets == 1) "" else "s")
+            }
+        }.trim()
         ExerciseCategory.CALISTHENICS -> {
-            val sets = "${item.defaultSets} set${if (item.defaultSets != 1) "s" else ""}"
-            "${item.defaultReps ?: "—"} reps • $sets"
+            val reps = item.defaultReps?.toString() ?: "?"
+            "$reps reps · ${item.defaultSets} set${if (item.defaultSets == 1) "" else "s"}"
         }
-        else -> {
-            val sets = "${item.defaultSets} set${if (item.defaultSets != 1) "s" else ""}"
-            val weight = item.defaultWeight
-            val reps = item.defaultReps ?: "—"
-            if (weight == null) "$reps reps • $sets" else "${weight.toInt()} lb × $reps reps • $sets"
+        ExerciseCategory.WEIGHT_MACHINE, ExerciseCategory.FREE_WEIGHTS -> {
+            val w = item.defaultWeight?.let { "${it.toInt()} lb" } ?: "?"
+            val r = item.defaultReps?.toString() ?: "?"
+            "$w × $r · ${item.defaultSets} set${if (item.defaultSets == 1) "" else "s"}"
         }
     }
-    val otherDefaults = defaults.filterKeys { it !in setOf("Speed", "Resistance", "Incline") }
-    return if (otherDefaults.isEmpty()) main
-    else main + "\n  " + otherDefaults.entries.joinToString(" / ") { "${it.key}: ${it.value}" }
+    // Append seat height / arm position reminder if present.
+    val reminder = listOfNotNull(
+        defaults["Seat height"]?.takeIf { it.isNotBlank() }?.let { "Seat $it" },
+        defaults["Arm position"]?.takeIf { it.isNotBlank() }?.let { "Arms $it" },
+        defaults["Chest pad depth"]?.takeIf { it.isNotBlank() }?.let { "Pad $it" }
+    ).joinToString(" · ").takeIf { it.isNotBlank() }
+    return if (reminder != null) "$main · $reminder" else main
 }
 
-/** Public helper — parsed by the session builder when starting a workout from a preset. */
-fun parseDefaultsFromNotes(notes: String?): Map<String, String> {
-    if (notes.isNullOrBlank()) return emptyMap()
-    if (!notes.startsWith("gym_log_defaults:")) return emptyMap()
-    val json = notes.removePrefix("gym_log_defaults:")
-    return try {
-        val obj = org.json.JSONObject(json)
-        buildMap {
-            val keys = obj.keys()
-            while (keys.hasNext()) {
-                val k = keys.next()
-                put(k, obj.optString(k, ""))
-            }
-        }
-    } catch (_: Throwable) { emptyMap() }
+private fun com.gymlog.app.data.PresetExerciseJoined.presetNotesSpeedFallback(): String {
+    // If we don't have the parsed setting, don't fake a value — return blank.
+    return ""
+}
+
+private fun com.gymlog.app.data.PresetExerciseJoined.presetNotesInclineFallback(): String {
+    return ""
 }

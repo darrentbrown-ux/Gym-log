@@ -5,24 +5,32 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -54,6 +62,9 @@ fun SettingsScreen(navController: NavHostController, padding: PaddingValues) {
         ctx.startActivity(chooser)
     }
 
+    val restSeconds by vm.prefs.restSeconds.collectAsState()
+    var restText by remember(restSeconds) { mutableStateOf(restSeconds.toString()) }
+
     Scaffold(
         topBar = { ScreenTopBar(title = "Settings", onBack = { navController.popBackStack() }) },
         snackbarHost = { SnackbarHost(snackbar) }
@@ -62,6 +73,50 @@ fun SettingsScreen(navController: NavHostController, padding: PaddingValues) {
             modifier = Modifier.fillMaxSize().padding(inner).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            Text("Workout defaults", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Default rest time used by the REST button in a workout.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = restText,
+                    onValueChange = { v ->
+                        // Only digits; keep state in sync, commit to prefs on focus-loss / Save.
+                        if (v.isEmpty() || v.all { it.isDigit() }) {
+                            restText = v
+                        }
+                    },
+                    label = { Text("Rest time (seconds)") },
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        val n = restText.toIntOrNull()?.coerceIn(5, 600) ?: 60
+                        restText = n.toString()
+                        scope.launch { vm.prefs.setRestSeconds(n) }
+                    }
+                ) { Text("Save") }
+            }
+            // Quick presets.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(30, 60, 90, 120).forEach { secs ->
+                    OutlinedButton(
+                        onClick = {
+                            restText = secs.toString()
+                            scope.launch { vm.prefs.setRestSeconds(secs) }
+                        }
+                    ) { Text("${secs}s") }
+                }
+            }
+
+            HorizontalDivider()
             Text("Data exports", style = MaterialTheme.typography.titleMedium)
             Text(
                 "All exports are saved to the app's cache and shared via Android's share sheet, so you can save them to Drive, email them, or send them anywhere.",
