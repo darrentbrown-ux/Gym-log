@@ -252,35 +252,9 @@ fun SessionDetailScreen(
                 onLongPressDrag = { from, to -> reorderInMemory(orderedIds, from, to) }
             )
 
-            // Small, always-visible "Save to routine" icon when this session has a source preset.
-            // Visible only when there's a preset AND the user has changed the order vs. DB.
-            if (sessionPresetId != null && orderedIds.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    IconButton(
-                        onClick = {
-                            scope.launch {
-                                val ids = orderedIds.toList()
-                                vm.reorderSessionExercises(sessionId, ids)
-                                sessionPresetId?.let { presetId ->
-                                    vm.reorderPresetExercises(presetId, ids)
-                                }
-                                snackbar.showSnackbar("Order saved")
-                            }
-                        },
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            Icons.Filled.Save,
-                            contentDescription = "Save order to routine"
-                        )
-                    }
-                }
-            }
+            // The "Save to routine" icon was removed in v1.5.1 — reordering during
+            // a workout applies to this session only; if the user wants to update
+            // the routine's order too, they can do it from PresetEditScreen.
 
             // ---- Lazy list of exercise cards ----
             if (orderedIds.isEmpty()) {
@@ -562,9 +536,12 @@ private fun FlowRowChips(
     androidx.compose.foundation.layout.FlowRow(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        // Tight spacing — the chip bar gets dense with many exercises in a
+        // routine. 4dp horizontal between chips, 2dp between rows. The chip
+        // labels themselves use the default AssistChip padding.
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         ids.forEach { id ->
             val detail = lookup(id) ?: return@forEach
@@ -961,6 +938,10 @@ private fun CollapsedSetRow(
     onToggleComplete: () -> Unit,
     onTapToExpand: () -> Unit
 ) {
+    // Collapsed single-line summary of a done-or-not-current set. Layout matches the
+    // expanded editor row above (Set N on the left, Done checkbox on the right) so
+    // the eye doesn't have to track a moving checkbox between states. Tapping the
+    // row expands it back into the editor.
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -968,19 +949,20 @@ private fun CollapsedSetRow(
             .padding(vertical = 4.dp)
             .clickable(enabled = true) { onTapToExpand() }
     ) {
-        Checkbox(
-            checked = row.completed,
-            onCheckedChange = { onToggleComplete() }
-        )
         Text(
             "Set ${row.setNumber}",
             style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(end = 8.dp)
+            modifier = Modifier.weight(1f).padding(start = 12.dp)
         )
         Text(
             summarize(row, category, exerciseName),
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(2f)
+        )
+        Checkbox(
+            checked = row.completed,
+            onCheckedChange = { onToggleComplete() }
         )
     }
 }
@@ -1225,17 +1207,23 @@ private fun SetRowEditor(
                 }
                 // Hip abduction (and similar abduction/adduction machines with named
                 // positions) gets a dedicated position dropdown instead of a free-text
-                // "Arm position" field. The dropdown values are seeded from
-                // suggestedSettings for the exercise; for Hip abduction specifically
-                // we hard-code lifted / forward / normal because the user spec'd
-                // them. (v1.5.1 — previously the position was typed as free text and
-                // varied between sessions, e.g. "out, lifted" vs "out lifted".)
+                // "Arm position" field. (v1.5.1 — added out, lifted / out, forward /
+                // out, normal. v1.5.1+ — also added the matching in, lifted / in, forward
+                // / in, normal entries so the user can switch between abduction and
+                // adduction on the same machine without typing free-form text.)
                 if (exerciseName.equals("Hip abduction", ignoreCase = true)) {
                     Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
                         DropdownField(
                             label = "Position",
                             value = row.settings["Arm position"].orEmpty().ifBlank { "—" },
-                            options = listOf("out, lifted", "out, forward", "out, normal"),
+                            options = listOf(
+                                "out, lifted",
+                                "out, forward",
+                                "out, normal",
+                                "in, lifted",
+                                "in, forward",
+                                "in, normal"
+                            ),
                             onSelected = { picked ->
                                 val ns = row.settings.toMutableMap()
                                 ns["Arm position"] = picked
