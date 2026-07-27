@@ -1,0 +1,121 @@
+package com.gymlog.app.ui.screens
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavHostController
+import com.gymlog.app.ui.GymLogViewModel
+import com.gymlog.app.ui.Screen
+import com.gymlog.app.ui.components.ScreenTopBar
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NewSessionScreen(navController: NavHostController, padding: PaddingValues, presetId: Long?) {
+    val vm: GymLogViewModel = viewModel()
+    val scope = rememberCoroutineScope()
+    val presets by vm.presets.collectAsState(initial = emptyList())
+
+    // Pre-selected preset (passed in from a "Start from this routine" button)
+    var selectedPresetId by remember { mutableStateOf(presetId) }
+    var expanded by remember { mutableStateOf(false) }
+    val defaultName = if (presetId != null) presets.firstOrNull { it.id == presetId }?.name.orEmpty()
+        else ""
+    var name by remember { mutableStateOf(defaultName) }
+    val dateLabel = remember {
+        SimpleDateFormat("EEE, MMM d, yyyy • h:mm a", Locale.getDefault())
+            .format(Date())
+    }
+
+    Scaffold(topBar = { ScreenTopBar("Start workout", onBack = { navController.popBackStack() }) }) { inner ->
+        Column(
+            modifier = Modifier.fillMaxSize().padding(inner).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(dateLabel, style = MaterialTheme.typography.bodyLarge)
+
+            ExposedDropdownMenuBox(
+                expanded = expanded,
+                onExpandedChange = { expanded = !expanded }
+            ) {
+                val selected = presets.firstOrNull { it.id == selectedPresetId }
+                OutlinedTextField(
+                    value = selected?.name ?: "Empty / blank routine",
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Pre-fill from routine") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                    modifier = Modifier.fillMaxWidth().menuAnchor()
+                )
+                DropdownMenuItem(text = { Text("None — start blank") }, onClick = {
+                    selectedPresetId = null; expanded = false
+                })
+                presets.forEach { p ->
+                    DropdownMenuItem(text = { Text(p.name) }, onClick = {
+                        selectedPresetId = p.id; expanded = false
+                        if (name.isBlank()) name = p.name
+                    })
+                }
+            }
+
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Session name (e.g. Morning push)") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Card(colors = CardDefaults.outlinedCardColors(), modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "Tip: weights, reps, and machine settings are editable per set. Add exercises anytime during the workout.",
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Button(
+                onClick = {
+                    scope.launch {
+                        val id = vm.buildSessionFromPreset(name.ifBlank { "Workout" }, selectedPresetId)
+                        navController.navigate(Screen.SessionDetail.build(id)) {
+                            popUpTo(Screen.Home.route)
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = true
+            ) { Text("Start workout") }
+        }
+    }
+}
