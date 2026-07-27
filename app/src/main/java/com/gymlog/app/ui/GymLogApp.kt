@@ -15,7 +15,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -125,7 +124,14 @@ fun GymLogApp() {
 
 @Composable
 private fun BottomBar(navController: NavHostController, currentRoute: String?) {
-    val startDest = remember { navController.graph.findStartDestination() }
+    // NOTE: We intentionally do NOT call `navController.graph.findStartDestination()`
+    // here. The `bottomBar` slot of `Scaffold` is sub-composed BEFORE the `NavHost`
+    // child slot in the same composition pass, so the graph hasn't been set yet
+    // on first composition — `getGraph()` throws `IllegalStateException: You must
+    // call setGraph() before calling getGraph()`. Hard-coding the route string
+    // (which IS the actual start destination of the NavHost) avoids the timing
+    // dependency entirely.
+    val startDestRoute = Screen.Home.route
     NavigationBar {
         tabs.forEach { tab ->
             val selected = currentRoute == tab.route ||
@@ -136,7 +142,7 @@ private fun BottomBar(navController: NavHostController, currentRoute: String?) {
                 onClick = {
                     val target = if (tab.route == TAB_NEW_SESSION) Screen.NewSession.build() else tab.route
                     // For bottom-bar destinations we always reset the back stack to the
-                    // start destination. Using `popUpTo(start.id) { inclusive = false; saveState = true }`
+                    // start destination. Using `popUpTo(startRoute) { inclusive = false; saveState = true }`
                     // + `launchSingleTop` + `restoreState` is the Compose-Navigation idiom
                     // for a tab bar — but the previous version had a race where after
                     // opening a tab, popping back, and opening another tab, the back stack
@@ -145,7 +151,7 @@ private fun BottomBar(navController: NavHostController, currentRoute: String?) {
                     // canonical start destination with `inclusive = false` so Home is the
                     // single source of truth on the stack.
                     navController.navigate(target) {
-                        popUpTo(startDest.id) {
+                        popUpTo(startDestRoute) {
                             // Builder receiver here is PopOptionsBuilder, distinct from
                             // the outer NavOptionsBuilder. The `inclusive` and `saveState`
                             // properties are PopOptionsBuilder-only — assigning them here
