@@ -35,12 +35,25 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun updateExercise(e: Exercise, settings: List<String>) {
         repo.updateExercise(e)
-        // Replace-setting-defs-by-name strategy for simplicity
-        val current = repo.settingsSnapshot(e.id).map { it.name }.toSet()
-        val desired = settings.map { it.trim() }.filter { it.isNotBlank() }.toSet()
-        val toRemove = repo.settingsSnapshot(e.id).filter { it.name !in desired }
-        toRemove.forEach { repo.deleteSettingDef(it) }
-        desired.filterNot { it in current }.forEach { repo.addSettingDef(MachineSettingDef(exerciseId = e.id, name = it)) }
+        // Replace-setting-defs-by-name strategy, BUT preserve any existing value
+        // the user has saved against a setting that we're keeping.
+        val current = repo.settingsSnapshot(e.id)
+        val currentByName = current.associateBy { it.name }
+        val desiredNames = settings.map { it.trim() }.filter { it.isNotBlank() }.toSet()
+        // Delete defs whose name is no longer in the desired list
+        current.filter { it.name !in desiredNames }.forEach { repo.deleteSettingDef(it) }
+        // For names that survive: keep their saved value; for new names: insert blank value
+        desiredNames.forEach { name ->
+            val existing = currentByName[name]
+            if (existing == null) {
+                repo.addSettingDef(MachineSettingDef(exerciseId = e.id, name = name))
+            }
+        }
+    }
+
+    /** Save the user's preferred value for a setting (e.g. "Seat height" -> "3"). */
+    suspend fun updateSettingValue(def: MachineSettingDef, newValue: String) {
+        repo.updateSettingDef(def.copy(value = newValue))
     }
 
     suspend fun deleteExercise(e: Exercise) = repo.deleteExercise(e)
@@ -193,6 +206,46 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
     /** All session exercises for a session, one-shot. */
     suspend fun sessionExercisesFor(sessionId: Long): List<com.gymlog.app.data.SessionExerciseDetail> =
         repo.sessionExercises(sessionId).first()
+
+    /**
+     * Reorder the SessionExercises for an in-progress session by their primary keys.
+     * `idsInNewOrder` is the list of `SessionExercise.id` values in the desired order.
+     * Reassigns their `position` field accordingly.
+     */
+    suspend fun reorderSessionExercises(sessionId: Long, idsInNewOrder: List<Long>) {
+        idsInNewOrder.forEachIndexed { idx, id ->
+            // Read the row then patch position to avoid Room auto-generating a new id.
+            repo.sessionDao.observeSessionExercises(sessionId).first()
+                .firstOrNull { it.id == id }
+                ?.let { existing ->
+                    repo.updateSessionExercise(existing.copy(position = idx))
+                }
+        }
+    }
+
+    /**
+     * Persist a new exercise order onto a preset. Used when the user re-orders exercises
+     * during a workout and taps "Save to routine".
+     */
+    suspend fun reorderPresetExercises(presetId: Long, idsInNewOrder: List<Long>) {
+        val current = repo.presetExercises(presetId).first()
+        val byId = current.associateBy { it.presetExerciseId }
+        idsInNewOrder.forEachIndexed { idx, id ->
+            val row = byId[id] ?: return@forEachIndexed
+            repo.updatePresetExercise(
+                com.gymlog.app.data.PresetExercise(
+                    id = row.presetExerciseId,
+                    presetId = row.presetId,
+                    exerciseId = row.exerciseId,
+                    defaultWeight = row.defaultWeight,
+                    defaultReps = row.defaultReps,
+                    defaultSets = row.defaultSets,
+                    position = idx,
+                    notes = row.presetNotes
+                )
+            )
+        }
+    }
 
     /** Write a complete workout log CSV (one row per set). */
     suspend fun exportCsv(): java.io.File = repo.writeCsv()

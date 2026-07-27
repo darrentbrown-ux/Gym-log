@@ -44,7 +44,8 @@ data class Exercise(
 data class MachineSettingDef(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val exerciseId: Long,
-    val name: String   // free-form label, e.g. "Seat height"
+    val name: String,    // free-form label, e.g. "Seat height"
+    val value: String = ""  // user's preferred value (e.g. "3"); blank = unset
 )
 
 /** Named workout preset ("Push day", "Legs") */

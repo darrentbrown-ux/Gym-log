@@ -91,16 +91,7 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(item.exerciseName, style = MaterialTheme.typography.titleMedium)
                                 Text(
-                                    buildString {
-                                        if (item.defaultWeight != null) append("${item.defaultWeight} lb × ")
-                                        append("${item.defaultReps ?: "?"} reps")
-                                        append(" • ${item.defaultSets} sets")
-                                        val defaults = parseDefaultsFromNotes(item.presetNotes ?: "")
-                                        if (defaults.isNotEmpty()) {
-                                            append("\n  defaults: ")
-                                            append(defaults.entries.joinToString(", ") { "${it.key}=${it.value}" })
-                                        }
-                                    },
+                                    describePresetEntry(item),
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
@@ -242,26 +233,26 @@ private fun AddExerciseToPresetDialog(
                     val cat = pickedCategory!!
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-                    if (cat != ExerciseCategory.CALISTHENICS) {
+                    // Cardio uses duration + per-machine settings, never weight/reps.
+                    if (cat != ExerciseCategory.CARDIO && cat != ExerciseCategory.CALISTHENICS) {
                         OutlinedTextField(
                             value = defWeight,
                             onValueChange = { defWeight = it },
-                            label = { Text(if (cat == ExerciseCategory.CARDIO) "Default level / resistance" else "Default weight (lb)") },
+                            label = { Text("Default weight (lb)") },
                             singleLine = true,
                             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
-                    if (cat != ExerciseCategory.CARDIO) {
-                        OutlinedTextField(
-                            value = defReps,
-                            onValueChange = { defReps = it },
-                            label = { Text("Default reps") },
-                            singleLine = true,
-                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
+                    // Calisthenics has reps but no weight.
+                    OutlinedTextField(
+                        value = defReps,
+                        onValueChange = { defReps = it },
+                        label = { Text("Default reps") },
+                        singleLine = true,
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
                     OutlinedTextField(
                         value = defSets,
                         onValueChange = { defSets = it },
@@ -352,6 +343,39 @@ private fun encodeDefaultsInNotes(defaults: Map<String, String>): String {
     val obj = org.json.JSONObject()
     defaults.forEach { (k, v) -> obj.put(k, v) }
     return "gym_log_defaults:${obj.toString()}"
+}
+
+/**
+ * Human-friendly description for the routine list — adapts to category:
+ *   CARDIO       → "Speed 2.8 / Incline 6 / 10 min"
+ *   CALISTHENICS → "12 reps • 3 sets"
+ *   strength     → "100 lb × 15 reps • 3 sets"
+ * Appends a defaults line for any saved setting defaults.
+ */
+private fun describePresetEntry(item: com.gymlog.app.data.PresetExerciseJoined): String {
+    val defaults = parseDefaultsFromNotes(item.presetNotes ?: "")
+    val sets = "${item.defaultSets} set${if (item.defaultSets != 1) "s" else ""}"
+    val main = when (item.exerciseCategory) {
+        ExerciseCategory.CARDIO -> {
+            val speed = defaults["Speed"] ?: defaults["Resistance"] ?: "—"
+            val incline = defaults["Incline"]
+            val parts = buildList {
+                add("Speed $speed")
+                if (incline != null) add("Incline $incline")
+            }
+            if (parts.isEmpty()) sets else "${parts.joinToString(" / ")} • $sets"
+        }
+        ExerciseCategory.CALISTHENICS ->
+            "${item.defaultReps ?: "—"} reps • $sets"
+        else -> {
+            val weight = item.defaultWeight
+            val reps = item.defaultReps ?: "—"
+            if (weight == null) "$reps reps • $sets" else "${weight.toInt()} lb × $reps reps • $sets"
+        }
+    }
+    val otherDefaults = defaults.filterKeys { it !in setOf("Speed", "Resistance", "Incline") }
+    return if (otherDefaults.isEmpty()) main
+    else main + "\n  " + otherDefaults.entries.joinToString(" / ") { "${it.key}: ${it.value}" }
 }
 
 /** Public helper — parsed by the session builder when starting a workout from a preset. */

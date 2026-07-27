@@ -40,6 +40,9 @@ interface MachineSettingDefDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(def: MachineSettingDef): Long
 
+    @Update
+    suspend fun update(def: MachineSettingDef)
+
     @Delete
     suspend fun delete(def: MachineSettingDef)
 }
@@ -76,6 +79,9 @@ interface PresetDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPresetExercise(pe: PresetExercise): Long
+
+    @Update
+    suspend fun updatePresetExercise(pe: PresetExercise)
 
     @Delete
     suspend fun deletePresetExercise(pe: PresetExercise)

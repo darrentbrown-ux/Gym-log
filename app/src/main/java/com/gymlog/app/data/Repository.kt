@@ -39,14 +39,17 @@ class Repository(private val context: Context) {
 
     // ---------- Setting defs ----------
     suspend fun addSettingDef(d: MachineSettingDef): Long = settingDefDao.insert(d)
+    suspend fun updateSettingDef(d: MachineSettingDef) = settingDefDao.update(d)
     suspend fun deleteSettingDef(d: MachineSettingDef) = settingDefDao.delete(d)
 
     // ---------- Presets ----------
     suspend fun addPreset(p: Preset): Long = presetDao.insert(p)
+    suspend fun updatePreset(p: Preset) = presetDao.update(p)
     suspend fun deletePreset(p: Preset) = presetDao.delete(p)
-    suspend fun addPresetExercise(pe: PresetExercise): Long = presetDao.insertPresetExercise(pe)
-    suspend fun deletePresetExercise(pe: PresetExercise) = presetDao.deletePresetExercise(pe)
     suspend fun getPreset(id: Long): Preset? = presetDao.get(id)
+    suspend fun addPresetExercise(pe: PresetExercise): Long = presetDao.insertPresetExercise(pe)
+    suspend fun updatePresetExercise(pe: PresetExercise) = presetDao.updatePresetExercise(pe)
+    suspend fun deletePresetExercise(pe: PresetExercise) = presetDao.deletePresetExercise(pe)
 
     // ---------- Sessions ----------
     suspend fun createSession(s: Session): Long = sessionDao.insertSession(s)

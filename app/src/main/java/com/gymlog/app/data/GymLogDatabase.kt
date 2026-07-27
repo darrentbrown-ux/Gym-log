@@ -27,7 +27,7 @@ class CategoryConverters {
         SessionExercise::class,
         SessionSet::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(CategoryConverters::class)
@@ -43,11 +43,21 @@ abstract class GymLogDatabase : RoomDatabase() {
         /**
          * v1 → v2: add a `notes` text column to `preset_exercises` so each routine
          * entry can carry per-setting default values (JSON-encoded by the UI layer).
-         * Non-destructive — existing rows keep their data with empty default notes.
          */
         private val MIGRATION_1_2: Migration = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE preset_exercises ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * v2 → v3: add a `value` text column to `machine_setting_defs` so the user can
+         * store their preferred value per setting (e.g. "Seat height: 3") that is shown
+         * as a reminder when they get to the machine, and persists across routines.
+         */
+        private val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE machine_setting_defs ADD COLUMN value TEXT NOT NULL DEFAULT ''")
             }
         }
 
@@ -58,7 +68,7 @@ abstract class GymLogDatabase : RoomDatabase() {
                     GymLogDatabase::class.java,
                     "gym_log.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { INSTANCE = it }
             }
