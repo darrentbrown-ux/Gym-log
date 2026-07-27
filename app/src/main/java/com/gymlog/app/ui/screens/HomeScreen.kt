@@ -12,14 +12,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ElevatedButton
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -27,16 +24,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.gymlog.app.ui.GymLogViewModel
 import com.gymlog.app.ui.Screen
 import com.gymlog.app.ui.components.ScreenTopBar
-import androidx.compose.runtime.remember
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -45,7 +41,6 @@ import java.util.Locale
 fun HomeScreen(navController: NavHostController, padding: PaddingValues) {
     val vm: GymLogViewModel = viewModel()
     val sessions by vm.sessions.collectAsState(initial = emptyList())
-    val exerciseCount by vm.exercises.collectAsState(initial = emptyList())
 
     Column(
         modifier = Modifier
@@ -66,7 +61,7 @@ fun HomeScreen(navController: NavHostController, padding: PaddingValues) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Quick-start cards
+            // Quick-start tiles
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -79,9 +74,9 @@ fun HomeScreen(navController: NavHostController, padding: PaddingValues) {
                 )
                 QuickAction(
                     modifier = Modifier.weight(1f),
-                    title = "Add\nExercise",
-                    icon = Icons.Filled.Add,
-                    onClick = { navController.navigate(Screen.ExerciseNew.route) }
+                    title = "Routines",
+                    icon = Icons.Filled.CalendarMonth,
+                    onClick = { navController.navigate(Screen.Presets.route) }
                 )
             }
 

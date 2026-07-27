@@ -74,12 +74,16 @@ fun ExerciseNewScreen(
 
     // Form state
     var category by remember { mutableStateOf(prefill?.category ?: ExerciseCategory.WEIGHT_MACHINE) }
-    var name by remember { mutableStateOf(prefill?.name ?: "") }
-    var isCustomName by remember {
+    var pickedFromDropdown by remember {
         mutableStateOf(
-            prefill != null && prefill.name !in ExerciseCatalog.COMMON_BY_CATEGORY[prefill.category].orEmpty()
+            // Only seed the dropdown if the prefill name was a recognised common exercise.
+            // Custom-only names land in customName below.
+            prefill?.name?.takeIf { p ->
+                ExerciseCatalog.COMMON_BY_CATEGORY[prefill.category].orEmpty().any { it == p }
+            }.orEmpty()
         )
     }
+    var customName by remember { mutableStateOf(prefill?.name?.takeIf { pickedFromDropdown.isBlank() } ?: "") }
     var notes by remember { mutableStateOf("") }
     var defaultWeight by remember { mutableStateOf("") }
     val settings = remember {
@@ -131,35 +135,33 @@ fun ExerciseNewScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            // ---- 2) NAME (scoped to category's common picks + Other) ----
+            // ---- 2) NAME — dropdown for common picks; custom field always visible so the
+            // user can always fall back to a free-text entry. The two combine: whichever
+            // field was last changed becomes the saved name.
             val commonOptions = remember(category) {
                 ExerciseCatalog.COMMON_BY_CATEGORY[category].orEmpty()
             }
             DropdownField(
-                label = "Name",
-                value = if (isCustomName) OTHER_NAME else name,
+                label = "Name (pick a common one)",
+                value = if (pickedFromDropdown.isNotBlank()) pickedFromDropdown else "",
                 options = commonOptions + OTHER_NAME,
                 onSelected = { picked ->
                     if (picked == OTHER_NAME) {
-                        isCustomName = true
-                        name = ""
+                        pickedFromDropdown = ""
                     } else {
-                        isCustomName = false
-                        name = picked
+                        pickedFromDropdown = picked
                     }
                 },
                 modifier = Modifier.fillMaxWidth()
             )
-
-            if (isCustomName) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Custom name") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
-            }
+            OutlinedTextField(
+                value = customName,
+                onValueChange = { customName = it },
+                label = { Text("Or type a custom name") },
+                placeholder = { Text("e.g. Cable Crossover") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
 
             // ---- 3) Default Weight (only when category uses weight) ----
             if (ExerciseCatalog.usesWeight(category)) {
@@ -234,8 +236,10 @@ fun ExerciseNewScreen(
                 onClick = {
                     scope.launch {
                         val settingsToPersist = settings.map { it.name.trim() }.filter { it.isNotBlank() }
+                        // Prefer the dropdown selection; otherwise whatever the user typed.
+                        val finalName = pickedFromDropdown.ifBlank { customName.trim() }
                         val id = vm.addExercise(
-                            name = name.trim(),
+                            name = finalName,
                             category = category,
                             notes = "${if (notes.isNotBlank()) notes.trim() + "\n\n" else ""}Default weight: ${defaultWeight.ifBlank { "—" }}",
                             settings = settingsToPersist
@@ -243,7 +247,7 @@ fun ExerciseNewScreen(
                         if (id > 0) navController.popBackStack()
                     }
                 },
-                enabled = name.isNotBlank(),
+                enabled = (pickedFromDropdown.isNotBlank() || customName.isNotBlank()),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Filled.Check, contentDescription = null)
@@ -254,7 +258,7 @@ fun ExerciseNewScreen(
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
             Text("Quick-add (${category.label})", style = MaterialTheme.typography.titleMedium)
             Text(
-                "Tap to open New exercise with this name pre-filled so you can review and save.",
+                "Tap a chip to fill the Name dropdown above — review settings and Save.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

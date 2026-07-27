@@ -4,6 +4,8 @@ import android.content.Context
 import com.gymlog.app.data.Exercise
 import com.gymlog.app.data.ExerciseCategory
 import com.gymlog.app.data.MachineSettingDef
+import com.gymlog.app.data.Preset
+import com.gymlog.app.data.PresetExercise
 import com.gymlog.app.data.Repository
 import com.gymlog.app.data.Session
 import com.gymlog.app.data.SessionExercise
@@ -12,26 +14,37 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 
 /**
- * One-time idempotent seeder for the user's reference workout (07/26/2026).
+ * One-time idempotent seeders.
  *
- * Runs on app startup; gated by a SharedPreferences flag so it only fires once per install.
- * The flag is set after a successful seed run, so re-installs / clear-data re-seed cleanly.
+ * Each seeder is gated by a separate SharedPreferences flag so future seeds don't
+ * re-run the original work but always run themselves exactly once per install.
  */
 object SampleWorkoutSeeder {
 
     private const val PREFS = "gym_log_seed"
-    private const val KEY_SEEDED_V1 = "seeded_v1_workout_2026_07_26"
+    private const val KEY_SEEDED_V1_WORKOUT = "seeded_v1_workout_2026_07_26"
+    private const val KEY_SEEDED_V1_ROUTINE = "seeded_v1_routine_basic_upper_body"
 
-    /** Returns true if seeding actually ran. */
+    /** Returns true if any seeding actually ran. */
     fun runIfNeeded(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if (prefs.getBoolean(KEY_SEEDED_V1, false)) return false
-        runBlocking { seed() }
-        prefs.edit().putBoolean(KEY_SEEDED_V1, true).apply()
-        return true
+        var ranAny = false
+
+        if (!prefs.getBoolean(KEY_SEEDED_V1_WORKOUT, false)) {
+            runBlocking { seedReferenceWorkout() }
+            prefs.edit().putBoolean(KEY_SEEDED_V1_WORKOUT, true).apply()
+            ranAny = true
+        }
+        if (!prefs.getBoolean(KEY_SEEDED_V1_ROUTINE, false)) {
+            runBlocking { seedBasicUpperBodyRoutine() }
+            prefs.edit().putBoolean(KEY_SEEDED_V1_ROUTINE, true).apply()
+            ranAny = true
+        }
+        return ranAny
     }
 
-    private suspend fun seed() {
+    /** Darren's 7/26/2026 workout: Treadmill warmup → Rowing → Triceps → Fly → Pull Down → Treadmill cooldown. */
+    private suspend fun seedReferenceWorkout() {
         val ctx = AppContext.context!!
         val repo = Repository(ctx)
 
@@ -53,16 +66,12 @@ object SampleWorkoutSeeder {
             return newId
         }
 
-        val treadmill1Id = ensureExercise("Treadmill", ExerciseCategory.CARDIO, listOf("Speed", "Incline", "Duration"))
-        val treadmill2Id = ensureExercise("Treadmill", ExerciseCategory.CARDIO, listOf("Speed", "Incline", "Duration"))
-        // (Same row — exercise row only stores settings *definitions*; values live on sets.)
+        val treadmillId = ensureExercise("Treadmill",       ExerciseCategory.CARDIO, listOf("Speed", "Incline", "Duration"))
+        val rowingId     = ensureExercise("Rowing Machine", ExerciseCategory.WEIGHT_MACHINE, listOf("Seat height", "Chest pad depth"))
+        val tricepsId   = ensureExercise("Triceps",         ExerciseCategory.WEIGHT_MACHINE, listOf("Seat height"))
+        val flyId       = ensureExercise("Fly",             ExerciseCategory.WEIGHT_MACHINE, listOf("Arms position", "Seat height"))
+        val pullId      = ensureExercise("Pull Down",       ExerciseCategory.WEIGHT_MACHINE, listOf("Seat height"))
 
-        val rowingId  = ensureExercise("Rowing Machine", ExerciseCategory.WEIGHT_MACHINE, listOf("Seat height", "Chest pad depth"))
-        val tricepsId = ensureExercise("Triceps",         ExerciseCategory.WEIGHT_MACHINE, listOf("Seat height"))
-        val flyId     = ensureExercise("Fly",             ExerciseCategory.WEIGHT_MACHINE, listOf("Arms position", "Seat height"))
-        val pullId    = ensureExercise("Pull Down",       ExerciseCategory.WEIGHT_MACHINE, listOf("Seat height"))
-
-        // --- The session row ---
         val sessionId = repo.createSession(
             Session(
                 date = sessionTime,
@@ -71,16 +80,13 @@ object SampleWorkoutSeeder {
             )
         )
 
-        // Reusable builder: a set = its setting value map + weight + reps
         fun settingsJson(m: Map<String, String>): String {
             val obj = org.json.JSONObject()
             m.forEach { (k, v) -> obj.put(k, v) }
             return obj.toString()
         }
-
         suspend fun addSe(exerciseId: Long, position: Int): Long =
             repo.addSessionExercise(SessionExercise(sessionId = sessionId, exerciseId = exerciseId, position = position))
-
         suspend fun addStrengthSet(seId: Long, n: Int, weight: Double, reps: Int, settings: Map<String, String>) {
             repo.addSet(SessionSet(
                 sessionExerciseId = seId,
@@ -106,38 +112,89 @@ object SampleWorkoutSeeder {
             ))
         }
 
-        // --- Walk through the workout in order ---
-        // 1. Treadmill warmup
-        addSe(treadmill1Id, 0).also { seId ->
+        // Treadmill warmup
+        addSe(treadmillId, 0).also { seId ->
             addCardioSet(seId, 20, mapOf("Speed" to "2.8", "Incline" to "6"))
         }
-        // 2. Rowing machine
+        // Rowing machine
         addSe(rowingId, 1).also { seId ->
             addStrengthSet(seId, 1, 85.0, 20, mapOf("Seat height" to "3", "Chest pad depth" to "3"))
             addStrengthSet(seId, 2, 100.0, 15, mapOf("Seat height" to "3", "Chest pad depth" to "3"))
             addStrengthSet(seId, 3, 100.0, 15, mapOf("Seat height" to "3", "Chest pad depth" to "3"))
         }
-        // 3. Triceps
+        // Triceps
         addSe(tricepsId, 2).also { seId ->
             addStrengthSet(seId, 1, 55.0, 15, mapOf("Seat height" to "6"))
             addStrengthSet(seId, 2, 55.0, 15, mapOf("Seat height" to "6"))
             addStrengthSet(seId, 3, 55.0, 12, mapOf("Seat height" to "6"))
         }
-        // 4. Fly
+        // Fly
         addSe(flyId, 3).also { seId ->
             addStrengthSet(seId, 1, 70.0, 15, mapOf("Arms position" to "3", "Seat height" to "6"))
             addStrengthSet(seId, 2, 70.0, 12, mapOf("Arms position" to "3", "Seat height" to "6"))
             addStrengthSet(seId, 3, 70.0, 10, mapOf("Arms position" to "3", "Seat height" to "6"))
         }
-        // 5. Pull Down
+        // Pull Down
         addSe(pullId, 4).also { seId ->
             addStrengthSet(seId, 1, 55.0, 20, mapOf("Seat height" to "4"))
             addStrengthSet(seId, 2, 70.0, 12, mapOf("Seat height" to "4"))
             addStrengthSet(seId, 3, 70.0, 12, mapOf("Seat height" to "4"))
         }
-        // 6. Treadmill cooldown
-        addSe(treadmill2Id, 5).also { seId ->
+        // Treadmill cooldown
+        addSe(treadmillId, 5).also { seId ->
             addCardioSet(seId, 10, mapOf("Speed" to "2.6", "Incline" to "6"))
+        }
+    }
+
+    /**
+     * Preset called "Basic Upper Body" — uses the four weight-machine exercises from
+     * the user's 7/26/2026 log (Rowing Machine, Triceps, Fly, Pull Down) with sensible
+     * default weights/reps and 3 sets each.
+     *
+     * Only created if a preset by this name does not already exist (so the user could
+     * delete it and re-trigger the seed by clearing app data).
+     */
+    private suspend fun seedBasicUpperBodyRoutine() {
+        val ctx = AppContext.context!!
+        val repo = Repository(ctx)
+
+        val existing = repo.presets().first().firstOrNull { it.name.equals("Basic Upper Body", ignoreCase = true) }
+        if (existing != null) return
+
+        suspend fun ensureExercise(name: String, category: ExerciseCategory, settings: List<String>): Long {
+            val match = repo.exerciseDao.observeAll().first()
+                .firstOrNull { it.name == name && it.category == category }
+            if (match != null) return match.id
+            val newId = repo.addExercise(Exercise(name = name, category = category, notes = "Basic Upper Body routine"))
+            settings.forEach { repo.addSettingDef(MachineSettingDef(exerciseId = newId, name = it)) }
+            return newId
+        }
+
+        val rowingId  = ensureExercise("Rowing Machine", ExerciseCategory.WEIGHT_MACHINE, listOf("Seat height", "Chest pad depth"))
+        val tricepsId = ensureExercise("Triceps",         ExerciseCategory.WEIGHT_MACHINE, listOf("Seat height"))
+        val flyId     = ensureExercise("Fly",             ExerciseCategory.WEIGHT_MACHINE, listOf("Arms position", "Seat height"))
+        val pullId    = ensureExercise("Pull Down",       ExerciseCategory.WEIGHT_MACHINE, listOf("Seat height"))
+
+        val presetId = repo.addPreset(Preset(name = "Basic Upper Body"))
+
+        data class PresetSpec(val exerciseId: Long, val sets: Int, val defaultWeight: Double?, val defaultReps: Int?)
+        val specs = listOf(
+            PresetSpec(rowingId,  sets = 3, defaultWeight = 100.0, defaultReps = 15),
+            PresetSpec(tricepsId, sets = 3, defaultWeight = 55.0,  defaultReps = 12),
+            PresetSpec(flyId,     sets = 3, defaultWeight = 70.0,  defaultReps = 12),
+            PresetSpec(pullId,    sets = 3, defaultWeight = 70.0,  defaultReps = 12)
+        )
+        specs.forEachIndexed { idx, spec ->
+            repo.addPresetExercise(
+                PresetExercise(
+                    presetId = presetId,
+                    exerciseId = spec.exerciseId,
+                    defaultWeight = spec.defaultWeight,
+                    defaultReps = spec.defaultReps,
+                    defaultSets = spec.sets,
+                    position = idx
+                )
+            )
         }
     }
 }

@@ -64,8 +64,15 @@ fun PresetsScreen(navController: NavHostController, padding: PaddingValues) {
         Column(
             modifier = Modifier.fillMaxSize().padding(inner).padding(horizontal = 16.dp)
         ) {
+            Text(
+                "Routines are reusable workout templates. Tap a routine to start a workout " +
+                    "with those exercises pre-filled, or tap Edit to change them.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
             if (presets.isEmpty()) {
-                EmptyHint("No routines yet. Tap + to create one.")
+                EmptyHint("No routines yet. Tap the + New routine button below to create your first one.")
             }
             LazyColumn {
                 items(presets, key = { it.id }) { p ->
