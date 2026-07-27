@@ -19,6 +19,13 @@ interface ExerciseDao {
     @Query("SELECT * FROM exercises WHERE id = :id")
     suspend fun get(id: Long): Exercise?
 
+    /**
+     * Case-insensitive rename used by data migrations (e.g. "Captain chair" →
+     * "Captain's chair" in v1.5.3). Returns the number of rows updated.
+     */
+    @Query("UPDATE exercises SET name = :newName WHERE LOWER(name) = LOWER(:oldName)")
+    suspend fun renameByExactName(oldName: String, newName: String): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(exercise: Exercise): Long
 

@@ -250,7 +250,7 @@ object SampleWorkoutSeeder {
         val dumbLatPullId = ensureExercise("Dumbbells lateral pulldown",   ExerciseCategory.FREE_WEIGHTS, listOf("Arm position"))
 
         // ---- Calisthenics ----
-        val captainChairId = ensureExercise("Captain chair", ExerciseCategory.CALISTHENICS, emptyList())
+        val captainChairId = ensureExercise("Captain's chair", ExerciseCategory.CALISTHENICS, emptyList())
 
         val presetId = repo.addPreset(Preset(name = "Ashley Example"))
 

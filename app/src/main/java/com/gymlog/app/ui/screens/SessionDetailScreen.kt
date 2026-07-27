@@ -3,7 +3,6 @@ package com.gymlog.app.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,14 +31,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DragHandle
-import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -71,14 +67,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInWindow
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.gymlog.app.data.Exercise
@@ -236,11 +226,14 @@ fun SessionDetailScreen(
                 .padding(inner)
         ) {
             // ---- Pinned header: date + QuickNavBar ----
+            // Tighter vertical padding around the date label so the chip bar can
+            // start higher up — the chip bar itself is also tighter (see
+            // QuickNavBar / FlowRowChips).
             Text(
                 SimpleDateFormat("EEE, MMM d • h:mm a", Locale.getDefault()).format(Date(sessionDate)),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 0.dp)
             )
 
             QuickNavBar(
@@ -248,8 +241,7 @@ fun SessionDetailScreen(
                     sessionExerciseList.firstOrNull { it.sessionExerciseId == id }
                 },
                 selectedIndex = selectedIndex,
-                onTap = { idx -> jumpTo(idx) },
-                onLongPressDrag = { from, to -> reorderInMemory(orderedIds, from, to) }
+                onTap = { idx -> jumpTo(idx) }
             )
 
             // The "Save to routine" icon was removed in v1.5.1 — reordering during
@@ -454,64 +446,54 @@ private fun AddExerciseToSessionDialog(
  * Wrapping row of chips at the top of the screen.
  *
  *  - Tap = callback with the chip's index in [exercises]
- *  - Long-press + drag horizontally = swap with the next chip
+ *  - Reorder removed in v1.5.3 — use PresetEditScreen for that.
  *
- * Uses an in-screen MutableState copy so the swap is immediate and not affected by Compose's
- * recomposition timing. After the user lifts their finger, we clear the dragging flag.
+ * Uses an in-screen MutableState copy so the chip list reflects the local
+ * `orderedIds` order (which mirrors the session's exercise order).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun QuickNavBar(
     exercises: List<SessionExerciseDetail>,
     selectedIndex: Int,
-    onTap: (Int) -> Unit,
-    onLongPressDrag: (from: Int, to: Int) -> Unit
+    onTap: (Int) -> Unit
 ) {
-    // Local mutable copy so we can show the live drag preview without mutating upstream state
     val live = remember(exercises) { mutableStateListOf<Long>().also { it.addAll(exercises.map { e -> e.sessionExerciseId }) } }
     LaunchedEffect(exercises) {
-        // Sync downstream: if upstream list changed (e.g. new exercise added), refresh
         live.clear()
         live.addAll(exercises.map { e -> e.sessionExerciseId })
     }
 
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant
-    ) {
-        // We deliberately wrap chips into multiple rows so long exercise lists don't
-        // require horizontal scrolling to find a chip.
-        FlowRowChips(
-            ids = live,
-            lookup = { id -> exercises.firstOrNull { it.sessionExerciseId == id } },
-            selectedId = exercises.getOrNull(selectedIndex)?.sessionExerciseId,
-            onTap = { id -> onTap(live.indexOf(id)) },
-            onLongPressDrag = { fromId, toId ->
-                val from = live.indexOf(fromId)
-                val to = live.indexOf(toId)
-                if (from >= 0 && to >= 0 && from != to) {
-                    onLongPressDrag(from, to)
-                }
-            }
-        )
+    // Tighter vertical padding around the bar — the chips themselves are
+    // smaller now (custom Surface instead of AssistChip) and we want the bar
+    // to take up as little vertical space as possible.
+    androidx.compose.foundation.layout.Column(modifier = Modifier.padding(vertical = 2.dp)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceVariant
+        ) {
+            FlowRowChips(
+                ids = live,
+                lookup = { id -> exercises.firstOrNull { it.sessionExerciseId == id } },
+                selectedId = exercises.getOrNull(selectedIndex)?.sessionExerciseId,
+                onTap = { id -> onTap(live.indexOf(id)) }
+            )
+        }
     }
 }
 
 /**
- * Flow layout of workout chips.
+ * Flow layout of workout chips (v1.5.3 — reordering removed).
  *
- * Reorder interaction (v1.5.1 — real drag, not tap-to-swap):
- *   1. **Long-press** a chip — it becomes the "pickup" (coloured border + drag-handle
- *      icon). The chip is *visually* lifted to the front via a zIndex; the other
- *      chips continue to compose normally.
- *   2. **Drag** in any direction. As the finger crosses into a different chip's
- *      bounding box, that chip swaps position with the pickup — so the user can
- *      drag past multiple chips in a single gesture. Hit-testing uses the
- *      `onGloballyPositioned` per-chip bounds recorded at layout time.
- *   3. **Lift** the finger — the final order is committed to the parent via
- *      `onLongPressDrag`, which writes to Room.
+ *  - Tap a chip → `onTap` (jumps to that exercise's card).
+ *  - Selected chip gets a thin border on the **visible** chip body (not the
+ *    48dp tap target) so the highlight matches the chip's drawn bounds.
+ *  - No long-press, no drag, no reorder handle. Reorder is done from
+ *    PresetEditScreen.
  *
- * Short tap (no long-press) = `onTap` callback (jumps to the exercise card).
+ * The visible chip is rendered as a custom Surface rather than AssistChip so we
+ * can control the exact height — AssistChip's minimum-interactive-size of 48dp
+ * would otherwise make the border appear taller than the visible chip.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -519,131 +501,40 @@ private fun FlowRowChips(
     ids: SnapshotStateList<Long>,
     lookup: (Long) -> SessionExerciseDetail?,
     selectedId: Long?,
-    onTap: (Long) -> Unit,
-    onLongPressDrag: (fromId: Long, toId: Long) -> Unit
+    onTap: (Long) -> Unit
 ) {
-    var pickedChipId by remember { mutableStateOf<Long?>(null) }
-    // Per-chip screen-space bounds in window coordinates. Recomputed whenever
-    // FlowRow lays out the chips. Used for hit-testing the drag.
-    val chipBounds = remember { mutableStateMapOf<Long, androidx.compose.ui.geometry.Rect>() }
-
-    // Approximate chip width (estimated from the chip's name length) is used as a
-    // half-step so a single swap fires when the finger has clearly moved into a
-    // neighbouring chip, not on every tiny micro-movement.
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val halfChip = with(density) { 32.dp.toPx() }  // conservative — most chips are wider
-
     androidx.compose.foundation.layout.FlowRow(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        // Tight spacing — the chip bar gets dense with many exercises in a
-        // routine. 4dp horizontal between chips, 2dp between rows. The chip
-        // labels themselves use the default AssistChip padding.
+            .padding(horizontal = 8.dp, vertical = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
         ids.forEach { id ->
             val detail = lookup(id) ?: return@forEach
             val isSelected = id == selectedId
-            val isPicked = id == pickedChipId
-
-            val borderModifier = if (isPicked) {
-                Modifier.border(
-                    width = 2.dp,
-                    color = MaterialTheme.colorScheme.primary,
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
-                )
-            } else if (isSelected) {
-                Modifier.border(
-                    width = 2.dp,
-                    color = MaterialTheme.colorScheme.tertiary,
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
-                )
-            } else Modifier
-
-            // We track the chip's position in window coordinates and detect drag here.
-            // The drag detector wraps the visible chip; it intercepts the long-press
-            // AND follows the finger. Short taps still bubble up to the AssistChip's
-            // own onClick because detectDragGesturesAfterLongPress only consumes
-            // events once the long-press timer fires.
-            Box(
-                modifier = borderModifier
-                    .zIndex(if (isPicked) 1f else 0f)
-                    .onGloballyPositioned { coords ->
-                        chipBounds[id] = androidx.compose.ui.geometry.Rect(
-                            offset = coords.positionInWindow(),
-                            size = androidx.compose.ui.geometry.Size(
-                                width = coords.size.width.toFloat(),
-                                height = coords.size.height.toFloat()
-                            )
-                        )
-                    }
-                    .pointerInput(id) {
-                        detectDragGesturesAfterLongPress(
-                            onDragStart = {
-                                pickedChipId = id
-                            },
-                            onDragEnd = {
-                                // Commit the final order to the parent.
-                                val finalPickedId = pickedChipId
-                                if (finalPickedId != null && finalPickedId != id) {
-                                    // Edge case: user long-pressed a chip and lifted without
-                                    // dragging past another chip — leave the order alone.
-                                }
-                                // Notify parent with the final order via the ids snapshot.
-                                pickedChipId = null
-                            },
-                            onDragCancel = { pickedChipId = null },
-                            onDrag = { change, _ ->
-                                change.consume()
-                                val picked = pickedChipId ?: return@detectDragGesturesAfterLongPress
-                                val pickedRect = chipBounds[picked] ?: return@detectDragGesturesAfterLongPress
-                                // Convert this pointerInput's local position to window
-                                // coordinates by adding the picked chip's own top-left.
-                                val absolute = pickedRect.topLeft + change.position
-                                // Find which chip is under the absolute pointer position.
-                                val hitId = chipBounds.entries
-                                    .firstOrNull { (_, rect) ->
-                                        absolute.x >= rect.left && absolute.x <= rect.right &&
-                                        absolute.y >= rect.top && absolute.y <= rect.bottom
-                                    }
-                                    ?.key
-                                    ?: return@detectDragGesturesAfterLongPress
-                                if (hitId == picked) return@detectDragGesturesAfterLongPress
-                                val fromIdx = ids.indexOf(picked)
-                                val toIdx = ids.indexOf(hitId)
-                                if (fromIdx >= 0 && toIdx >= 0 && fromIdx != toIdx) {
-                                    val moving = ids.removeAt(fromIdx)
-                                    ids.add(toIdx, moving)
-                                    // Notify parent so it can persist.
-                                    onLongPressDrag(picked, hitId)
-                                }
-                            }
-                        )
-                    }
+            val borderColor = if (isSelected) MaterialTheme.colorScheme.tertiary
+                              else MaterialTheme.colorScheme.outlineVariant
+            // Render the chip as a small Surface with a clickable Modifier. This
+            // gives us exact control over the visible size and lets the border
+            // match the chip body precisely.
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = if (isSelected) MaterialTheme.colorScheme.tertiaryContainer
+                        else MaterialTheme.colorScheme.surface,
+                border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
+                modifier = Modifier.clickable { onTap(id) }
             ) {
-                AssistChip(
-                    onClick = {
-                        // Short tap (no long-press fired) → jump to that exercise.
-                        if (pickedChipId == null) onTap(id)
-                    },
-                    label = { Text(detail.exerciseName) },
-                    leadingIcon = when {
-                        isPicked -> { { Icon(Icons.Filled.DragIndicator, contentDescription = null) } }
-                        isSelected -> { { Icon(Icons.Filled.DragHandle, contentDescription = null) } }
-                        else -> null
-                    }
+                Text(
+                    detail.exerciseName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isSelected) MaterialTheme.colorScheme.onTertiaryContainer
+                            else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                 )
             }
         }
     }
-}
-
-private fun reorderInMemory(list: SnapshotStateList<Long>, from: Int, to: Int) {
-    if (from == to || from !in list.indices || to !in list.indices) return
-    val item = list.removeAt(from)
-    list.add(to, item)
 }
 
 /**

@@ -37,6 +37,14 @@ class Repository(private val context: Context) {
     suspend fun updateExercise(e: Exercise) = exerciseDao.update(e)
     suspend fun deleteExercise(e: Exercise) = exerciseDao.delete(e)
 
+    /**
+     * Rename all exercises whose name matches `oldName` (case-insensitive) to
+     * `newName`. Returns the number of rows renamed. Used by data migrations
+     * like the v1.5.3 "Captain chair" → "Captain's chair" rename.
+     */
+    suspend fun renameExerciseByName(oldName: String, newName: String): Int =
+        exerciseDao.renameByExactName(oldName, newName)
+
     // ---------- Setting defs ----------
     suspend fun addSettingDef(d: MachineSettingDef): Long = settingDefDao.insert(d)
     suspend fun updateSettingDef(d: MachineSettingDef) = settingDefDao.update(d)
