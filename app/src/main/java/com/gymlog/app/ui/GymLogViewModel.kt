@@ -291,6 +291,13 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun backupJson(): java.io.File = repo.writeBackup()
 
     /**
+     * Import a JSON backup file produced by [backupJson]. Additive — existing
+     * data is preserved, new rows are inserted. Returns counts per table.
+     * See [com.gymlog.app.data.Repository.importBackup] for full semantics.
+     */
+    suspend fun importJson(file: java.io.File) = repo.importBackup(file)
+
+    /**
      * Update the defaults (weight / reps / sets / settings envelope) for an existing
      * PresetExercise row in place. Used by the Edit Exercise flow on the routine
      * editor — the user picks an existing exercise and changes its defaults without

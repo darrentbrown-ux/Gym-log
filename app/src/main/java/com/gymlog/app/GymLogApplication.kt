@@ -45,5 +45,16 @@ class GymLogApplication : Application() {
             if (n > 0) Log.i("GymLogApp", "Migration v1.5.3: renamed $n 'Captain chair' → 'Captain's chair'")
             prefs.edit().putBoolean("migrated_v153_captain_chair_rename", true).apply()
         }
+
+        // v1.5.4: drop the `·` middle dot from the seeded workout name. Some
+        // devices / fonts rendered it as a non-English glyph (the user reported
+        // 路 in the exported CSV); the rename normalises the column to plain
+        // ASCII for compatibility with downstream tooling.
+        if (!prefs.getBoolean("migrated_v154_seeded_workout_name", false)) {
+            val repo = Repository(this)
+            val n = repo.renameSessionByName("Workout · 7/26/2026", "Workout 7/26/2026")
+            if (n > 0) Log.i("GymLogApp", "Migration v1.5.4: renamed $n 'Workout · 7/26/2026' → 'Workout 7/26/2026'")
+            prefs.edit().putBoolean("migrated_v154_seeded_workout_name", true).apply()
+        }
     }
 }

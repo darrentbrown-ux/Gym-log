@@ -119,6 +119,14 @@ interface SessionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSession(session: Session): Long
 
+    /**
+     * Rename a session by its exact (case-sensitive) name. Used by the v1.5.4
+     * migration to drop the `·` middle dot from the seeded workout name
+     * ("Workout · 7/26/2026" → "Workout 7/26/2026"). Returns rows updated.
+     */
+    @Query("UPDATE sessions SET name = :newName WHERE name = :oldName")
+    suspend fun renameByExactName(oldName: String, newName: String): Int
+
     @Update
     suspend fun updateSession(session: Session)
 

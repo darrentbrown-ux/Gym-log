@@ -95,7 +95,7 @@ fun HomeScreen(navController: NavHostController, padding: PaddingValues) {
             ) {
                 QuickAction(
                     modifier = Modifier.weight(1f),
-                    title = "Start\nWorkout",
+                    title = "Start Workout",
                     icon = Icons.Filled.PlayArrow,
                     onClick = { navController.navigate(Screen.NewSession.build()) }
                 )
@@ -158,22 +158,41 @@ fun HomeScreen(navController: NavHostController, padding: PaddingValues) {
     }
 }
 
+/**
+ * Home-screen quick-action card.
+ *
+ * v1.5.4: both quick actions now have a fixed height and a single-line title so
+ * the two cards are visually identical. Previously the "Start Workout" card
+ * wrapped to two lines and grew taller than the "Routines" card because the
+ * text height naturally differed.
+ */
 @Composable
-private fun QuickAction(modifier: Modifier = Modifier, title: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+private fun QuickAction(
+    modifier: Modifier = Modifier,
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit
+) {
     Card(
-        modifier = modifier,
+        modifier = modifier.height(96.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
         onClick = onClick
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.height(36.dp))
-            Spacer(Modifier.height(4.dp))
-            Text(title, style = MaterialTheme.typography.titleMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            Icon(icon, contentDescription = null, modifier = Modifier.height(32.dp))
+            Spacer(Modifier.height(6.dp))
+            Text(
+                title,
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                maxLines = 1
+            )
         }
     }
 }

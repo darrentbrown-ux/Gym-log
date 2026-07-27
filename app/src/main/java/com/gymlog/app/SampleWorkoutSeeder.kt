@@ -80,7 +80,10 @@ object SampleWorkoutSeeder {
         val sessionId = repo.createSession(
             Session(
                 date = sessionTime,
-                name = "Workout · 7/26/2026",
+                // v1.5.4: removed the `·` middle dot from the seeded name. Some
+                // devices / fonts rendered it as a non-English glyph in the
+                // exported CSV, which the user wanted to clean up.
+                name = "Workout 7/26/2026",
                 presetId = null
             )
         )

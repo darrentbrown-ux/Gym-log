@@ -1,6 +1,9 @@
 package com.gymlog.app.ui.screens
 
 import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
@@ -40,7 +44,9 @@ import androidx.navigation.NavHostController
 import com.gymlog.app.data.Repository
 import com.gymlog.app.ui.GymLogViewModel
 import com.gymlog.app.ui.components.ScreenTopBar
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen(navController: NavHostController, padding: PaddingValues) {
@@ -60,6 +66,37 @@ fun SettingsScreen(navController: NavHostController, padding: PaddingValues) {
         val chooser = Intent.createChooser(intent, chooserTitle)
             .also { it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
         ctx.startActivity(chooser)
+    }
+
+    /**
+     * Copy the user-picked content:// URI into the app's cache (so we can hand
+     * the resulting File to the repository without holding a ContentResolver
+     * reference across suspend boundaries) and then call [vm.importJson] on it.
+     * Returns a snackbar message describing the outcome.
+     */
+    suspend fun importFromUri(uri: Uri): String = withContext(Dispatchers.IO) {
+        val temp = java.io.File(ctx.cacheDir, "import_${System.currentTimeMillis()}.json")
+        try {
+            ctx.contentResolver.openInputStream(uri)?.use { input ->
+                temp.outputStream().use { output -> input.copyTo(output) }
+            } ?: return@withContext "Import failed: could not open file"
+            val summary = vm.importJson(temp)
+            "Imported ${summary.exercises} exercises, ${summary.presets} routines, ${summary.sessions} workouts, ${summary.sessionSets} sets"
+        } catch (e: Exception) {
+            "Import failed: ${e.message}"
+        } finally {
+            temp.delete()
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val msg = importFromUri(uri)
+            snackbar.showSnackbar(msg)
+        }
     }
 
     val restSeconds by vm.prefs.restSeconds.collectAsState()
@@ -148,6 +185,18 @@ fun SettingsScreen(navController: NavHostController, padding: PaddingValues) {
             ) {
                 Icon(Icons.Filled.Save, contentDescription = null)
                 Text("Backup user settings (JSON)", modifier = Modifier.padding(start = 8.dp))
+            }
+
+            // v1.5.4: import button. Opens the system file picker filtered to JSON
+            // files. The selected file is read into the cache, parsed by
+            // BackupCodec.fromJson, and inserted as new rows (additive — existing
+            // data is preserved, see Repository.importBackup).
+            OutlinedButton(
+                onClick = { importLauncher.launch(arrayOf("application/json", "text/json", "text/plain", "*/*")) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Filled.UploadFile, contentDescription = null)
+                Text("Restore from JSON backup", modifier = Modifier.padding(start = 8.dp))
             }
 
             Card(modifier = Modifier.fillMaxWidth()) {

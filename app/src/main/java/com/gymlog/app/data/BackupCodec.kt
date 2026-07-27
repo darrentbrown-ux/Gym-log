@@ -131,4 +131,101 @@ object BackupCodec {
         val escaped = s.replace("\"", "\"\"")
         return if (needsQuote) "\"$escaped\"" else escaped
     }
+
+    // ===== JSON → Dump (v1.5.4 import) =====
+
+    /**
+     * Parse a backup-JSON string back into a [Dump]. Mirrors [toJson] exactly
+     * and is tolerant of missing optional fields (uses empty/default values
+     * rather than throwing). Unknown top-level keys are ignored so future
+     * versions of the export schema can extend the format without breaking
+     * older imports.
+     */
+    fun fromJson(json: String): Dump {
+        val root = org.json.JSONObject(json)
+        return Dump(
+            exercises = parseArray(root.optJSONArray("exercises")) { o ->
+                Exercise(
+                    // The original primary key is preserved here so the repository
+                    // can build an old-id → new-id mapping. It is explicitly zeroed
+                    // at insert time in Repository.importBackup so Room auto-generates
+                    // a fresh primary key.
+                    id = o.optLong("id", 0L),
+                    name = o.getString("name"),
+                    category = ExerciseCategory.valueOf(o.getString("category")),
+                    notes = o.optString("notes", "")
+                )
+            },
+            settingDefs = parseArray(root.optJSONArray("settingDefs")) { o ->
+                MachineSettingDef(
+                    id = o.optLong("id", 0L),
+                    exerciseId = o.getLong("exerciseId"),
+                    name = o.getString("name")
+                )
+            },
+            presets = parseArray(root.optJSONArray("presets")) { o ->
+                Preset(id = o.optLong("id", 0L), name = o.getString("name"))
+            },
+            presetExercises = parseArray(root.optJSONArray("presetExercises")) { o ->
+                PresetExercise(
+                    id = o.optLong("id", 0L),
+                    presetId = o.getLong("presetId"),
+                    exerciseId = o.getLong("exerciseId"),
+                    defaultWeight = o.optDoubleOrNull("defaultWeight"),
+                    defaultReps = o.optIntOrNull("defaultReps"),
+                    defaultSets = o.optInt("defaultSets", 3),
+                    position = o.optInt("position", 0),
+                    notes = o.optString("notes", "")
+                )
+            },
+            sessions = parseArray(root.optJSONArray("sessions")) { o ->
+                Session(
+                    id = o.optLong("id", 0L),
+                    date = o.getLong("date"),
+                    name = o.getString("name"),
+                    presetId = o.optLongOrNull("presetId")
+                )
+            },
+            sessionExercises = parseArray(root.optJSONArray("sessionExercises")) { o ->
+                SessionExercise(
+                    id = o.optLong("id", 0L),
+                    sessionId = o.getLong("sessionId"),
+                    exerciseId = o.getLong("exerciseId"),
+                    position = o.optInt("position", 0),
+                    notes = o.optString("notes", "")
+                )
+            },
+            sessionSets = parseArray(root.optJSONArray("sessionSets")) { o ->
+                SessionSet(
+                    id = o.optLong("id", 0L),
+                    sessionExerciseId = o.getLong("sessionExerciseId"),
+                    setNumber = o.getInt("setNumber"),
+                    reps = o.optIntOrNull("reps"),
+                    weight = o.optDoubleOrNull("weight"),
+                    settingsValues = o.optString("settingsValues", "{}"),
+                    durationSeconds = o.optIntOrNull("durationSeconds"),
+                    distance = o.optDoubleOrNull("distance"),
+                    completed = o.optBoolean("completed", true)
+                )
+            }
+        )
+    }
+
+    private inline fun <T> parseArray(arr: org.json.JSONArray?, block: (org.json.JSONObject) -> T): List<T> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).mapNotNull { i ->
+            runCatching { block(arr.getJSONObject(i)) }
+                .onFailure { android.util.Log.w("BackupCodec", "Skipping malformed row $i: ${it.message}") }
+                .getOrNull()
+        }
+    }
+
+    private fun org.json.JSONObject.optLongOrNull(name: String): Long? =
+        if (isNull(name)) null else optLong(name, 0L).takeIf { has(name) && !isNull(name) }
+
+    private fun org.json.JSONObject.optIntOrNull(name: String): Int? =
+        if (isNull(name)) null else optInt(name, 0).takeIf { has(name) && !isNull(name) }
+
+    private fun org.json.JSONObject.optDoubleOrNull(name: String): Double? =
+        if (isNull(name)) null else optDouble(name, 0.0).takeIf { has(name) && !isNull(name) }
 }

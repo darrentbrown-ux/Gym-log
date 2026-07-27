@@ -6,6 +6,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.flow.first
 
 /**
  * Single entry point used by ViewModels.  Wraps the three DAOs and persists JSON + CSV exports
@@ -63,6 +64,13 @@ class Repository(private val context: Context) {
     suspend fun createSession(s: Session): Long = sessionDao.insertSession(s)
     suspend fun updateSession(s: Session) = sessionDao.updateSession(s)
     suspend fun deleteSession(s: Session) = sessionDao.deleteSession(s)
+
+    /**
+     * Rename all sessions whose name matches `oldName` exactly to `newName`.
+     * Returns rows updated. Used by the v1.5.4 data migration.
+     */
+    suspend fun renameSessionByName(oldName: String, newName: String): Int =
+        sessionDao.renameByExactName(oldName, newName)
 
     /** Cascade-delete a session AND its session_exercises and session_sets. */
     suspend fun deleteSessionCascade(sessionId: Long) = sessionDao.deleteSessionCascade(sessionId)
@@ -189,6 +197,115 @@ class Repository(private val context: Context) {
         val out = File(dir, "gym_backup_$stamp.json")
         out.writeText(json)
         return out
+    }
+
+    /**
+     * Summary returned by [importBackup]. Counts the rows successfully inserted
+     * in each table — surfaced to the user in a snackbar so they have feedback
+     * even on a 1000-row import.
+     */
+    data class ImportSummary(
+        val exercises: Int,
+        val settingDefs: Int,
+        val presets: Int,
+        val presetExercises: Int,
+        val sessions: Int,
+        val sessionExercises: Int,
+        val sessionSets: Int
+    )
+
+    /**
+     * Read a JSON backup file and insert its rows into the local database.
+     *
+     * Behaviour:
+     *  - **Additive** — every row is inserted as a new row. Existing user data
+     *    is preserved. The user is responsible for cleaning up duplicates if
+     *    they re-import the same backup twice.
+     *  - **ID remapping** — old IDs from the backup are mapped to the new
+     *    auto-generated IDs as we go, so foreign keys (exerciseId, presetId,
+     *    sessionId, sessionExerciseId) line up correctly.
+     *  - **Tolerant** — malformed rows are skipped (logged as warnings by
+     *    BackupCodec) rather than aborting the whole import.
+     *
+     * @return counts of rows inserted per table.
+     */
+    suspend fun importBackup(file: File): ImportSummary {
+        val json = file.readText(Charsets.UTF_8)
+        val dump = BackupCodec.fromJson(json)
+
+        // 1. Exercises. Build a name+category → new-id map so child rows can
+        //    resolve their exerciseId even after renumbering.
+        val exIdMap = HashMap<Long, Long>(dump.exercises.size * 2)
+        // If a user has an existing exercise with the same name + category,
+        // dedupe to that row's ID rather than creating a duplicate. This
+        // keeps the import idempotent for the common "restore to a phone
+        // that's been set up" case.
+        val existingExercises = exerciseDao.observeAll().first()
+        val existingExByKey = existingExercises.associateBy { it.name to it.category }
+        for (ex in dump.exercises) {
+            val key = ex.name to ex.category
+            val existing = existingExByKey[key]
+            val newId = existing?.id ?: exerciseDao.insert(ex.copy(id = 0L))
+            exIdMap[ex.id] = newId
+        }
+
+        // 2. Setting defs.
+        val sdIdMap = HashMap<Long, Long>(dump.settingDefs.size * 2)
+        for (sd in dump.settingDefs) {
+            val exId = exIdMap[sd.exerciseId] ?: continue
+            val newId = settingDefDao.insert(sd.copy(id = 0L, exerciseId = exId))
+            sdIdMap[sd.id] = newId
+        }
+
+        // 3. Presets.
+        val presetIdMap = HashMap<Long, Long>(dump.presets.size * 2)
+        for (p in dump.presets) {
+            val newId = presetDao.insert(p.copy(id = 0L))
+            presetIdMap[p.id] = newId
+        }
+
+        // 4. Preset exercises.
+        var peCount = 0
+        for (pe in dump.presetExercises) {
+            val presetId = presetIdMap[pe.presetId] ?: continue
+            val exId = exIdMap[pe.exerciseId] ?: continue
+            presetDao.insertPresetExercise(pe.copy(id = 0L, presetId = presetId, exerciseId = exId))
+            peCount++
+        }
+
+        // 5. Sessions.
+        val sessionIdMap = HashMap<Long, Long>(dump.sessions.size * 2)
+        for (s in dump.sessions) {
+            val newId = sessionDao.insertSession(s.copy(id = 0L, presetId = s.presetId?.let { presetIdMap[it] }))
+            sessionIdMap[s.id] = newId
+        }
+
+        // 6. Session exercises.
+        val seIdMap = HashMap<Long, Long>(dump.sessionExercises.size * 2)
+        for (se in dump.sessionExercises) {
+            val sessionId = sessionIdMap[se.sessionId] ?: continue
+            val exId = exIdMap[se.exerciseId] ?: continue
+            val newId = sessionDao.insertSessionExercise(se.copy(id = 0L, sessionId = sessionId, exerciseId = exId))
+            seIdMap[se.id] = newId
+        }
+
+        // 7. Session sets.
+        var setCount = 0
+        for (ss in dump.sessionSets) {
+            val seId = seIdMap[ss.sessionExerciseId] ?: continue
+            sessionDao.insertSet(ss.copy(id = 0L, sessionExerciseId = seId))
+            setCount++
+        }
+
+        return ImportSummary(
+            exercises = exIdMap.size,
+            settingDefs = sdIdMap.size,
+            presets = presetIdMap.size,
+            presetExercises = peCount,
+            sessions = sessionIdMap.size,
+            sessionExercises = seIdMap.size,
+            sessionSets = setCount
+        )
     }
 
     fun shareUri(file: File) = FileProvider.getUriForFile(
