@@ -2,38 +2,38 @@ package com.gymlog.app.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -63,13 +63,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
@@ -86,6 +84,30 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * In-workout screen.
+ *
+ * Layout:
+ *   [Scaffold top bar]
+ *   ┌───────────────────────────────────────────┐
+ *   │  date                                      │  <- fixed
+ *   │  [chip][chip][chip][chip]  ⊕              │  <- QuickNav (wraps, pinned)
+ *   ├───────────────────────────────────────────┤
+ *   │  Exercise card 1                            │
+ *   │  Exercise card 2                            │  <- LazyColumn fills rest
+ *   │  Exercise card 3                            │
+ *   │  ...                                        │
+ *   ├───────────────────────────────────────────┤
+ *   │  + Add exercise during workout             │
+ *   └───────────────────────────────────────────┘
+ *
+ * - Cardio exercises get duration + distance only (no weight/reps/sets count).
+ * - Each exercise card shows preferred-settings reminder (small grey text).
+ * - Sets are presented one at a time: only the most-recent is fully editable,
+ *   older ones are collapsed single lines. None start marked Done.
+ * - QuickNav chips are tap-to-jump; long-press + drag = reorder.
+ * - "Save to routine" (small icon-only button) appears when session came from a preset.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SessionDetailScreen(
@@ -111,26 +133,28 @@ fun SessionDetailScreen(
         }
     }
 
-    // Local in-memory ordering. Mirrors the Flow but lets us drag-reorder without DB roundtrips.
+    // Local in-memory ordering. Mirrors the Flow but lets us drag-reorder without
+    // a DB roundtrip; only persisted to DB via "save to routine".
     val orderedIds = remember { mutableStateListOf<Long>() }
     LaunchedEffect(sessionExerciseList) {
-        // Sync: if a new id appears, append; otherwise reset to flow's order minus our edits.
         val flowIds = sessionExerciseList.map { it.sessionExerciseId }
-        if (orderedIds.toList() != flowIds && orderedIds.isEmpty()) {
-            orderedIds.addAll(flowIds)
-        }
+        // First time, take flow order. After that, only follow flow when our list was empty
+        // (otherwise concurrent edits would clobber user drag).
+        if (orderedIds.isEmpty()) orderedIds.addAll(flowIds)
     }
 
     var showAddExercise by remember { mutableStateOf(false) }
     var pickedExercise by remember { mutableStateOf<Exercise?>(null) }
-    var selectedIndex by remember { mutableStateOf(-1) }        // exercises index in orderedIds
+    var selectedIndex by remember { mutableStateOf(-1) }
 
     val listState = rememberLazyListState()
 
-    fun scrollToIndex(i: Int) {
+    fun jumpTo(i: Int) {
         selectedIndex = i
         scope.launch {
-            listState.animateScrollToItem(i + 1)  // +1 because index 0 is the QuickNav header
+            // QuickNav now lives OUTSIDE the LazyColumn (pinned at top), so item 0 in
+            // the LazyColumn is the first exercise. Bring it to the top of the viewport.
+            listState.animateScrollToItem(i, scrollOffset = 0)
         }
     }
 
@@ -147,79 +171,85 @@ fun SessionDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner)
-                .padding(horizontal = 8.dp)
         ) {
+            // ---- Pinned header: date + QuickNavBar ----
             Text(
                 SimpleDateFormat("EEE, MMM d • h:mm a", Locale.getDefault()).format(Date(sessionDate)),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
             )
 
+            QuickNavBar(
+                exercises = orderedIds.mapNotNull { id ->
+                    sessionExerciseList.firstOrNull { it.sessionExerciseId == id }
+                },
+                selectedIndex = selectedIndex,
+                onTap = { idx -> jumpTo(idx) },
+                onLongPressDrag = { from, to -> reorderInMemory(orderedIds, from, to) }
+            )
+
+            // Small, always-visible "Save to routine" icon when this session has a source preset.
+            // Visible only when there's a preset AND the user has changed the order vs. DB.
+            if (sessionPresetId != null && orderedIds.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    IconButton(
+                        onClick = {
+                            scope.launch {
+                                val ids = orderedIds.toList()
+                                vm.reorderSessionExercises(sessionId, ids)
+                                sessionPresetId?.let { presetId ->
+                                    vm.reorderPresetExercises(presetId, ids)
+                                }
+                                snackbar.showSnackbar("Order saved")
+                            }
+                        },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Save,
+                            contentDescription = "Save order to routine"
+                        )
+                    }
+                }
+            }
+
+            // ---- Lazy list of exercise cards ----
             if (orderedIds.isEmpty()) {
                 EmptyHint("This workout has no exercises yet. Tap + Add exercise below.")
             }
-
+            val detailList: List<SessionExerciseDetail> = orderedIds.mapNotNull { id ->
+                sessionExerciseList.firstOrNull { it.sessionExerciseId == id }
+            }
             LazyColumn(
                 state = listState,
+                modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
-                contentPadding = PaddingValues(vertical = 4.dp)
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
             ) {
-                item("quicknav") {
-                    QuickNavBar(
-                        exercises = orderedIds.mapNotNull { id ->
-                            sessionExerciseList.firstOrNull { it.sessionExerciseId == id }
-                        },
-                        selectedIndex = selectedIndex,
-                        onTap = { scrollToIndex(it) },
-                        onLongPressDrag = { from, to ->
-                            reorderInMemory(orderedIds, from, to)
-                        }
-                    )
-                }
-                if (sessionPresetId != null && orderedIds.isNotEmpty()) {
-                    item("save-order") {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                            horizontalArrangement = Arrangement.End
-                        ) {
-                            OutlinedButton(onClick = {
-                                scope.launch {
-                                    vm.reorderSessionExercises(sessionId, orderedIds.toList())
-                                    sessionPresetId?.let { presetId ->
-                                        vm.reorderPresetExercises(presetId, orderedIds.toList())
-                                    }
-                                    snackbar.showSnackbar("Order saved")
-                                }
-                            }) {
-                                Icon(Icons.Filled.Save, contentDescription = null)
-                                Text(" Save to routine", modifier = Modifier.padding(start = 4.dp))
-                            }
-                        }
-                    }
-                }
-                val detailList: List<SessionExerciseDetail> = orderedIds.mapNotNull { id ->
-                    sessionExerciseList.firstOrNull { it.sessionExerciseId == id }
-                }
                 itemsIndexed(items = detailList, key = { _, d -> d.sessionExerciseId }) { idx, detail ->
-                    val isSelected = detail.sessionExerciseId == orderedIds.getOrNull(selectedIndex)
+                    val isSelected = idx == selectedIndex && selectedIndex >= 0
                     ExerciseLogCard(
                         detail = detail,
-                        isHighlighted = isSelected && selectedIndex >= 0,
+                        isHighlighted = isSelected,
                         vm = vm,
-                        sessionId = sessionId,
-                        onJumpTop = { scrollToIndex(0) }
+                        sessionId = sessionId
                     )
                 }
             }
 
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            HorizontalDivider()
 
             OutlinedButton(
                 onClick = { showAddExercise = true },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 Icon(Icons.Filled.Add, contentDescription = null)
                 Spacer(Modifier.width(4.dp))
@@ -267,8 +297,13 @@ fun SessionDetailScreen(
 }
 
 /**
- * Top-of-screen scrollable row of chips: each chip = one exercise. Tap to scroll;
- * long-press + drag to reorder (writes only to in-memory state — see Save-to-routine button).
+ * Wrapping row of chips at the top of the screen.
+ *
+ *  - Tap = callback with the chip's index in [exercises]
+ *  - Long-press + drag horizontally = swap with the next chip
+ *
+ * Uses an in-screen MutableState copy so the swap is immediate and not affected by Compose's
+ * recomposition timing. After the user lifts their finger, we clear the dragging flag.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -278,96 +313,129 @@ private fun QuickNavBar(
     onTap: (Int) -> Unit,
     onLongPressDrag: (from: Int, to: Int) -> Unit
 ) {
-    val density = LocalDensity.current
-    var draggingIndex by remember { mutableStateOf<Int?>(null) }
-    var dragOffset by remember { mutableStateOf(Offset.Zero) }
+    // Local mutable copy so we can show the live drag preview without mutating upstream state
+    val live = remember(exercises) { mutableStateListOf<Long>().also { it.addAll(exercises.map { e -> e.sessionExerciseId }) } }
+    LaunchedEffect(exercises) {
+        // Sync downstream: if upstream list changed (e.g. new exercise added), refresh
+        live.clear()
+        live.addAll(exercises.map { e -> e.sessionExerciseId })
+    }
 
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp),
-        tonalElevation = 1.dp,
-        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant
     ) {
-        Column(modifier = Modifier.padding(8.dp)) {
-            Text(
-                "Tap to jump · long-press a chip + drag to reorder",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            LazyRow(
+        // We deliberately wrap chips into multiple rows so long exercise lists don't
+        // require horizontal scrolling to find a chip.
+        FlowRowChips(
+            ids = live,
+            lookup = { id -> exercises.firstOrNull { it.sessionExerciseId == id } },
+            selectedId = exercises.getOrNull(selectedIndex)?.sessionExerciseId,
+            onTap = { id -> onTap(live.indexOf(id)) },
+            onLongPressDrag = { fromId, toId ->
+                val from = live.indexOf(fromId)
+                val to = live.indexOf(toId)
+                if (from >= 0 && to >= 0 && from != to) {
+                    onLongPressDrag(from, to)
+                }
+            }
+        )
+    }
+}
+
+/**
+ * Render the chips in a flow layout, where each chip is its own drag target.
+ *
+ * Drag mechanic (the working version):
+ *   1. On long-press, this chip becomes the drag origin and tracks cumulative horizontal drag.
+ *   2. Once the cursor passes the midpoint of the adjacent chip's horizontal range,
+ *      swap the two chips in `live` and reset the drag origin.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FlowRowChips(
+    ids: SnapshotStateList<Long>,
+    lookup: (Long) -> SessionExerciseDetail?,
+    selectedId: Long?,
+    onTap: (Long) -> Unit,
+    @Suppress("UNUSED_PARAMETER") onLongPressDrag: (fromId: Long, toId: Long) -> Unit
+) {
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    var draggingId by remember { mutableStateOf<Long?>(null) }
+    var dragAccum by remember { mutableStateOf(0f) }
+
+    androidx.compose.foundation.layout.FlowRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        ids.forEach { id ->
+            val detail = lookup(id)
+                ?: return@forEach
+            val isSelected = id == selectedId
+            val isDragging = id == draggingId
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                itemsIndexed(items = exercises) { idx, detail ->
-                    val isDragging = draggingIndex == idx
-                    Box(
-                        modifier = Modifier
-                            .then(
-                                if (isDragging) Modifier
-                                    .offset(x = dragOffset.x.toInt().dp, y = 0.dp)
-                                else Modifier
-                            )
-                            .pointerInput(detail.sessionExerciseId) {
-                                detectTapGestures(onTap = { onTap(idx) })
-                            }
-                            .pointerInput(detail.sessionExerciseId) {
-                                detectDragGesturesAfterLongPress(
-                                    onDragStart = {
-                                        draggingIndex = idx
-                                        dragOffset = Offset.Zero
-                                    },
-                                    onDragEnd = {
-                                        draggingIndex = null
-                                        dragOffset = Offset.Zero
-                                    },
-                                    onDragCancel = {
-                                        draggingIndex = null
-                                        dragOffset = Offset.Zero
-                                    },
-                                    onDrag = { change, drag ->
-                                        change.consume()
-                                        dragOffset = dragOffset + drag
-                                        val thresh = with(density) { 60.dp.toPx() }
-                                        if (kotlin.math.abs(dragOffset.x) > thresh) {
-                                            val direction = if (dragOffset.x < 0) 1 else -1
-                                            val target = (idx + direction).coerceIn(0, exercises.size - 1)
-                                            if (target != idx) onLongPressDrag(idx, target)
-                                            dragOffset = Offset.Zero
-                                        }
+                    .offset(x = if (isDragging) dragAccum.toInt().dp else 0.dp)
+                    .pointerInput(id) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                draggingId = id
+                                dragAccum = 0f
+                            },
+                            onDrag = { change, drag ->
+                                change.consume()
+                                dragAccum += drag.x
+                                val chipWidth = with(density) { 96.dp.toPx() }
+                                if (kotlin.math.abs(dragAccum) > chipWidth / 2f) {
+                                    val direction = if (dragAccum < 0) +1 else -1
+                                    val fromIdx = ids.indexOf(id)
+                                    val toIdx = (fromIdx + direction).coerceIn(0, ids.size - 1)
+                                    if (toIdx != fromIdx) {
+                                        val moving = ids.removeAt(fromIdx)
+                                        ids.add(toIdx, moving)
+                                        dragAccum = 0f
                                     }
-                                )
-                            }
-                    ) {
-                        AssistChip(
-                            onClick = { onTap(idx) },
-                            label = { Text(detail.exerciseName) },
-                            leadingIcon = if (idx == selectedIndex) {
-                                { Icon(Icons.Filled.DragHandle, contentDescription = null) }
-                            } else null
+                                }
+                            },
+                            onDragEnd = { draggingId = null; dragAccum = 0f },
+                            onDragCancel = { draggingId = null; dragAccum = 0f }
                         )
                     }
-                }
+                    .pointerInput(id) {
+                        detectTapGestures(onTap = { onTap(id) })
+                    }
+            ) {
+                AssistChip(
+                    onClick = { onTap(id) },
+                    label = { Text(detail.exerciseName) },
+                    leadingIcon = if (isSelected) {
+                        { Icon(Icons.Filled.DragHandle, contentDescription = null) }
+                    } else null
+                )
             }
         }
     }
 }
 
-private fun reorderInMemory(list: androidx.compose.runtime.snapshots.SnapshotStateList<Long>, from: Int, to: Int) {
-    if (from == to) return
-    val v = list.toMutableList()
-    val item = v.removeAt(from)
-    v.add(to, item)
-    list.clear()
-    list.addAll(v)
+private fun reorderInMemory(list: SnapshotStateList<Long>, from: Int, to: Int) {
+    if (from == to || from !in list.indices || to !in list.indices) return
+    val item = list.removeAt(from)
+    list.add(to, item)
 }
 
 /**
- * Per-exercise card with collapsible sets, preferred settings reminder, and per-machine
- * value editor.
+ * One card per exercise. Cardio hides Sets count default and uses Duration+Distance,
+ * strength uses Weight+Reps, calisthenics uses Reps only.
+ *
+ * Sets:
+ *   - First card mount: exactly **one** set row, expanded, NOT marked Done.
+ *   - User taps "+ Add set" to create another set. The new set becomes "current"
+ *     (expanded); older ones collapse to one-line summaries.
+ *   - User taps a collapsed row → it becomes current (expanded). Tap the checkbox to
+ *     toggle complete (saves to DB).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -375,20 +443,27 @@ private fun ExerciseLogCard(
     detail: SessionExerciseDetail,
     isHighlighted: Boolean,
     vm: GymLogViewModel,
-    sessionId: Long,
-    onJumpTop: () -> Unit
+    sessionId: Long
 ) {
     val scope = rememberCoroutineScope()
 
     val existingSets by vm.setsOf(detail.sessionExerciseId).collectAsState(initial = emptyList())
     val settingDefs by vm.settingsFor(detail.exerciseId).collectAsState(initial = emptyList())
 
-    // Local rows mirror SessionSet rows. Order matches existingSets, then any new rows.
-    val rows = remember(detail.sessionExerciseId, existingSets) {
-        mutableStateListOf<SetRowState>().apply {
-            if (existingSets.isEmpty()) add(SetRowState(setNumber = 1))
-            else existingSets.forEach { add(SetRowState.fromExisting(it)) }
+    // Mirror DB sets into local rows.  Reset ONLY when the EXISTING-SETS LIST CHANGES;
+    // never reset due to recompositions (otherwise tapping a row blows it away).
+    var hasInitialised by remember(detail.sessionExerciseId) { mutableStateOf(false) }
+    val rows = remember(detail.sessionExerciseId) { mutableStateListOf<SetRowState>() }
+    LaunchedEffect(detail.sessionExerciseId, existingSets) {
+        if (!hasInitialised && existingSets.isEmpty()) {
+            rows.add(SetRowState(setNumber = 1))
+            hasInitialised = true
+        } else if (!hasInitialised && existingSets.isNotEmpty()) {
+            rows.clear()
+            existingSets.forEach { rows.add(SetRowState.fromExisting(it)) }
+            hasInitialised = true
         }
+        // Subsequent DB emissions don't overwrite rows — those are the user's edits.
     }
 
     var settingsExpanded by remember(detail.sessionExerciseId) { mutableStateOf(false) }
@@ -413,7 +488,7 @@ private fun ExerciseLogCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            // Header
+            // ----- Header -----
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(detail.exerciseName, style = MaterialTheme.typography.titleMedium)
@@ -426,10 +501,11 @@ private fun ExerciseLogCard(
                         )
                     }
                 }
-                IconButton(onClick = {
-                    settingsExpanded = !settingsExpanded
-                }) {
-                    Icon(Icons.Filled.Edit, contentDescription = "Edit preferred settings")
+                IconButton(onClick = { settingsExpanded = !settingsExpanded }) {
+                    Icon(
+                        if (settingsExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = "Edit preferred settings"
+                    )
                 }
                 IconButton(onClick = {
                     scope.launch {
@@ -446,19 +522,19 @@ private fun ExerciseLogCard(
                 }
             }
 
-            // Preferred settings reminder + editable values (collab)
-            if (settingDefs.isNotEmpty()) {
+            // ----- Preferred settings editor -----
+            if (settingsExpanded && settingDefs.isNotEmpty()) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
                 Text(
-                    "Preferred settings on this machine",
+                    "Preferred settings",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                for (def in settingDefs) {
+                settingDefs.forEach { def ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             def.name,
-                            modifier = Modifier.width(110.dp),
+                            modifier = Modifier.width(120.dp),
                             style = MaterialTheme.typography.bodyMedium
                         )
                         OutlinedTextField(
@@ -474,20 +550,22 @@ private fun ExerciseLogCard(
                 }
             }
 
+            // ----- Sets -----
             HorizontalDivider(modifier = Modifier.padding(vertical = 6.dp))
-            Text(
-                "Sets",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            // Sets: the most recent is expanded; older are collapsed (one-line summary).
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Sets",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+            }
             rows.forEachIndexed { idx, row ->
                 val isCurrent = idx == rows.lastIndex
                 if (isCurrent || settingsExpanded) {
                     SetRowEditor(
                         row = row,
-                        setIdx = idx,
+                        isCurrent = isCurrent,
                         category = detail.exerciseCategory,
                         onChanged = { updated ->
                             rows[idx] = updated
@@ -496,10 +574,18 @@ private fun ExerciseLogCard(
                         onDelete = {
                             scope.launch {
                                 row.existingId?.let {
-                                    vm.deleteSet(SessionSet(id = it, sessionExerciseId = detail.sessionExerciseId, setNumber = row.setNumber))
+                                    vm.deleteSet(
+                                        SessionSet(
+                                            id = it,
+                                            sessionExerciseId = detail.sessionExerciseId,
+                                            setNumber = row.setNumber
+                                        )
+                                    )
                                 }
-                                rows.removeAt(idx)
-                                for (i in rows.indices) rows[i] = rows[i].copy(setNumber = i + 1)
+                                if (rows.size > 1) {
+                                    rows.removeAt(idx)
+                                    for (i in rows.indices) rows[i] = rows[i].copy(setNumber = i + 1)
+                                }
                             }
                         }
                     )
@@ -511,21 +597,57 @@ private fun ExerciseLogCard(
                             val next = row.copy(completed = !row.completed)
                             rows[idx] = next
                             scope.launch {
-                                val payload = SetRowState.toSet(next, detail.sessionExerciseId)
                                 val currentId = next.existingId
-                                if (currentId != null) vm.updateSet(payload.copy(id = currentId, completed = next.completed))
+                                if (currentId != null) {
+                                    vm.updateSet(
+                                        SessionSet(
+                                            id = currentId,
+                                            sessionExerciseId = detail.sessionExerciseId,
+                                            setNumber = next.setNumber,
+                                            reps = next.reps.toIntOrNull(),
+                                            weight = next.weight.toDoubleOrNull(),
+                                            settingsValues = SetRowState.encodeSettings(next.settings),
+                                            durationSeconds = next.durationMin.toIntOrNull()?.let { it * 60 },
+                                            distance = next.distance.toDoubleOrNull(),
+                                            completed = next.completed
+                                        )
+                                    )
+                                }
                             }
                         },
                         onTapToExpand = {
-                            // Move this row to the end of rows list to make it current
+                            // Move this row to the end of `rows` so it becomes "current" (expanded).
+                            // We re-number rows by their new position so set labels stay 1..N.
                             val snapshot = rows.toList()
+                            val moving = snapshot[idx]
+                            val filtered = snapshot.filterIndexed { i, _ -> i != idx }.toMutableList()
+                            filtered.add(moving.copy(setNumber = filtered.size + 1))
+                            // Re-sequence the in-between rows
+                            for (i in filtered.indices) filtered[i] = filtered[i].copy(setNumber = i + 1)
                             rows.clear()
-                            rows.addAll(snapshot.filterIndexed { i, _ -> i != idx } + snapshot[idx])
+                            rows.addAll(filtered)
+                            // Persist the renumber for non-current rows that have a DB id
+                            scope.launch {
+                                rows.forEach { r ->
+                                    r.existingId?.let { id ->
+                                        if (r.setNumber != row.setNumber) {
+                                            vm.updateSet(
+                                                SessionSet(
+                                                    id = id,
+                                                    sessionExerciseId = detail.sessionExerciseId,
+                                                    setNumber = r.setNumber
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     )
                 }
             }
 
+            Spacer(Modifier.padding(top = 6.dp))
             OutlinedButton(
                 onClick = {
                     val nextNum = (rows.maxOfOrNull { it.setNumber } ?: 0) + 1
@@ -533,7 +655,7 @@ private fun ExerciseLogCard(
                     rows.add(newRow)
                     saveRow(newRow)
                 },
-                modifier = Modifier.padding(top = 6.dp)
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Filled.Add, contentDescription = null)
                 Spacer(Modifier.width(4.dp))
@@ -555,7 +677,7 @@ private fun CollapsedSetRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .pointerInput(Unit) { detectTapGestures(onTap = { onTapToExpand() }) }
+            .clickable(enabled = true) { onTapToExpand() }
     ) {
         Checkbox(
             checked = row.completed,
@@ -569,12 +691,6 @@ private fun CollapsedSetRow(
         Text(
             summarize(row, category),
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.weight(1f))
-        Text(
-            "Tap to edit",
-            style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
@@ -681,7 +797,7 @@ private class SetRowState(
 @Composable
 private fun SetRowEditor(
     row: SetRowState,
-    setIdx: Int,
+    isCurrent: Boolean,
     category: ExerciseCategory,
     onChanged: (SetRowState) -> Unit,
     onDelete: () -> Unit
@@ -707,12 +823,15 @@ private fun SetRowEditor(
                     checked = row.completed,
                     onCheckedChange = { onChanged(row.copy(completed = it, settings = row.settings)) }
                 )
-                IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Delete set") }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Delete set")
+                }
             }
         }
-        // Show weight/reps for strength categories, duration/distance for cardio, reps only for calisthenics
+
         when (category) {
             ExerciseCategory.CARDIO -> {
+                // No Sets-count display, no weight/reps; just duration + distance.
                 Row(modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(
                         value = row.durationMin,

@@ -1,15 +1,19 @@
 package com.gymlog.app.ui.screens
 
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -38,6 +42,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -77,45 +82,81 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
 
     var showAdd by remember { mutableStateOf(false) }
 
+    // Local ordering so we can do drag-reorder visually, then persist with "Save order".
+    val orderedItems = remember { mutableStateListOf<com.gymlog.app.data.PresetExerciseJoined>() }
+    LaunchedEffect(items) {
+        // First time, take upstream order; otherwise, don't clobber user reorders.
+        if (orderedItems.isEmpty()) {
+            orderedItems.addAll(items)
+        }
+    }
+
     Scaffold(
         topBar = { ScreenTopBar("Edit: $presetName", onBack = { navController.popBackStack() }) }
     ) { inner ->
         Column(modifier = Modifier.fillMaxSize().padding(inner).padding(16.dp)) {
-            if (items.isEmpty()) {
+            if (orderedItems.isEmpty()) {
                 EmptyHint("No exercises yet. Tap + Add exercise below.")
             }
             LazyColumn(modifier = Modifier.weight(1f)) {
-                items(items, key = { it.presetExerciseId }) { item ->
-                    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                        Row(modifier = Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(item.exerciseName, style = MaterialTheme.typography.titleMedium)
-                                Text(
-                                    describePresetEntry(item),
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                            IconButton(onClick = {
-                                scope.launch {
-                                    vm.removePresetExercise(
-                                        PresetExercise(
-                                            id = item.presetExerciseId,
-                                            presetId = presetId,
-                                            exerciseId = item.exerciseId
-                                        )
+                itemsIndexed(
+                    items = orderedItems,
+                    key = { _, it -> it.presetExerciseId }
+                ) { idx, item ->
+                    PresetExerciseRow(
+                        item = item,
+                        isDragging = false,
+                        onRemove = {
+                            scope.launch {
+                                vm.removePresetExercise(
+                                    PresetExercise(
+                                        id = item.presetExerciseId,
+                                        presetId = presetId,
+                                        exerciseId = item.exerciseId
                                     )
-                                }
-                            }) { Icon(Icons.Filled.Close, contentDescription = "Remove") }
+                                )
+                                orderedItems.remove(item)
+                            }
+                        },
+                        onReorderByIndex = { fromId, direction ->
+                            val from = orderedItems.indexOfFirst { it.presetExerciseId == fromId }
+                            val to = (from + direction).coerceIn(0, orderedItems.size - 1)
+                            if (from >= 0 && from != to) {
+                                val moving = orderedItems.removeAt(from)
+                                orderedItems.add(to, moving)
+                            }
                         }
-                    }
+                    )
                 }
             }
-            Button(
-                onClick = { showAdd = true },
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp)
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Filled.Add, contentDescription = null)
-                Text("Add exercise", modifier = Modifier.padding(start = 6.dp))
+                // Save order icon-only, shown only when order was changed AND there's a preset.
+                IconButton(
+                    onClick = {
+                        scope.launch {
+                            vm.reorderPresetExercises(
+                                presetId,
+                                orderedItems.map { it.presetExerciseId }
+                            )
+                        }
+                    },
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Save,
+                        contentDescription = "Save exercise order"
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Button(onClick = { showAdd = true }) {
+                    Icon(Icons.Filled.Add, contentDescription = null)
+                    Text("Add exercise", modifier = Modifier.padding(start = 6.dp))
+                }
             }
         }
     }
@@ -126,13 +167,12 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
             onDismiss = { showAdd = false },
             onConfirm = { spec ->
                 scope.launch {
-                    // Resolve to a DB row, creating one if needed.
                     val exerciseId = vm.ensureExerciseInDb(
                         name = spec.name,
                         category = spec.category,
                         settingDefNames = suggestedSettingNames(spec.name, spec.category)
                     )
-                    vm.addPresetExerciseReturningId(
+                    val newId = vm.addPresetExerciseReturningId(
                         presetId = presetId,
                         exerciseId = exerciseId,
                         defaultWeight = spec.defaultWeight,
@@ -140,10 +180,69 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                         defaultSets = spec.defaultSets,
                         notes = encodeDefaultsInNotes(spec.settingsDefaults)
                     )
+                    // Read upstream again so the new row appears with its joined fields,
+                    // then append it to local orderedItems.
+                    val refreshed = vm.presetExercises(presetId).let { flow ->
+                        var last = emptyList<com.gymlog.app.data.PresetExerciseJoined>()
+                        flow.collect { last = it }
+                        last
+                    }
+                    val new = refreshed.firstOrNull { it.presetExerciseId == newId }
+                    if (new != null) orderedItems.add(new)
                     showAdd = false
                 }
             }
         )
+    }
+}
+
+/**
+ * Card row showing one PresetExercise with drag-to-reorder (long-press + horizontal swipe).
+ * The actual reorder is done by the parent (it has access to the master list).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PresetExerciseRow(
+    item: com.gymlog.app.data.PresetExerciseJoined,
+    isDragging: Boolean,
+    onRemove: () -> Unit,
+    onReorderByIndex: (fromId: Long, direction: Int) -> Unit
+) {
+    var dragAccum by remember { mutableStateOf(0f) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val threshold = with(density) { 60.dp.toPx() }
+
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(
+            modifier = Modifier
+                .padding(12.dp)
+                .fillMaxWidth()
+                .pointerInput(item.presetExerciseId) {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { dragAccum = 0f },
+                        onDrag = { change, drag ->
+                            change.consume()
+                            dragAccum += drag.x
+                            if (kotlin.math.abs(dragAccum) > threshold) {
+                                val direction = if (dragAccum < 0) -1 else 1
+                                onReorderByIndex(item.presetExerciseId, direction)
+                                dragAccum = 0f
+                            }
+                        },
+                        onDragEnd = { dragAccum = 0f },
+                        onDragCancel = { dragAccum = 0f }
+                    )
+                },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(item.exerciseName, style = MaterialTheme.typography.titleMedium)
+                Text(describePresetEntry(item), style = MaterialTheme.typography.bodySmall)
+            }
+            IconButton(onClick = onRemove) {
+                Icon(Icons.Filled.Close, contentDescription = "Remove")
+            }
+        }
     }
 }
 
@@ -181,7 +280,9 @@ private fun AddExerciseToPresetDialog(
     var pickedName by remember { mutableStateOf("") }
     var defWeight by remember { mutableStateOf("") }
     var defReps by remember { mutableStateOf("") }
-    var defSets by remember { mutableStateOf("3") }
+    // Cardio doesn't use "sets"; defaults to blank (so a Treadmill routine item has no
+    // meaningless "3 sets" attached to it).
+    var defSets by remember { mutableStateOf("") }
     val settingsVals = remember { mutableStateListOf<Pair<String, String>>() }
 
     AlertDialog(
@@ -220,10 +321,11 @@ private fun AddExerciseToPresetDialog(
                         settingsVals.clear()
                         names.forEach { settingsVals.add(it to "") }
 
-                        // Reset form fields when picking a new exercise
+                        // Reset form fields when picking a new exercise. Strength/calisthenics
+                        // default to 3 sets; cardio leaves it blank (duration suffices).
                         defWeight = ""
                         defReps = ""
-                        defSets = "3"
+                        defSets = if (cat == ExerciseCategory.CARDIO) "" else "3"
                         if (dbRow == null) Unit // can't prefill weights from DB without a setter
                     },
                     modifier = Modifier.fillMaxWidth()
@@ -253,14 +355,17 @@ private fun AddExerciseToPresetDialog(
                         keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth()
                     )
-                    OutlinedTextField(
-                        value = defSets,
-                        onValueChange = { defSets = it },
-                        label = { Text("Default sets") },
-                        singleLine = true,
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    // Cardio uses Duration + speed/incline, never "sets".
+                    if (cat != ExerciseCategory.CARDIO) {
+                        OutlinedTextField(
+                            value = defSets,
+                            onValueChange = { defSets = it },
+                            label = { Text("Default sets") },
+                            singleLine = true,
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
 
                     if (settingsVals.isNotEmpty()) {
                         Text(
@@ -312,7 +417,8 @@ private fun AddExerciseToPresetDialog(
                             category = pickedCategory!!,
                             defaultWeight = defWeight.toDoubleOrNull(),
                             defaultReps = defReps.toIntOrNull(),
-                            defaultSets = defSets.toIntOrNull() ?: 3,
+                            defaultSets = if (pickedCategory == ExerciseCategory.CARDIO) 1
+                                          else (defSets.toIntOrNull() ?: 3),
                             settingsDefaults = defaults
                         )
                     )
