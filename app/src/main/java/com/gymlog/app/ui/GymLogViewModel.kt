@@ -17,7 +17,13 @@ import kotlinx.coroutines.flow.first
 
 class GymLogViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val repo = Repository(app)
+    /**
+     * The underlying [Repository]. Exposed so screens can `repo.sets(...).first()` to
+     * synchronously resolve the first Room emission before seeding UI state —
+     * `collectAsState(initial = emptyList())` is insufficient because the empty initial
+     * value is indistinguishable from "exercise has no sets yet".
+     */
+    val repo: Repository = Repository(app)
 
     // ---- Exercise ----
     val exercises: Flow<List<Exercise>> = repo.exercises()
@@ -176,7 +182,7 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
                             settingsValues = if (setIdx == 0) defaultSettingsJson else "{}",
                             durationSeconds = null,
                             distance = null,
-                            completed = true
+                            completed = false
                         )
                     )
                 }

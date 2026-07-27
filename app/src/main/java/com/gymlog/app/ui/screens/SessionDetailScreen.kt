@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.DragIndicator
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.ExpandLess
@@ -79,6 +80,7 @@ import com.gymlog.app.data.SessionSet
 import com.gymlog.app.ui.GymLogViewModel
 import com.gymlog.app.ui.components.DropdownField
 import com.gymlog.app.ui.components.ScreenTopBar
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -344,14 +346,20 @@ private fun QuickNavBar(
 }
 
 /**
- * Render the chips in a flow layout, where each chip is its own drag target.
+ * Flow layout of workout chips.
  *
- * Drag mechanic (the working version):
- *   1. On long-press, this chip becomes the drag origin and tracks cumulative horizontal drag.
- *   2. Once the cursor passes the midpoint of the adjacent chip's horizontal range,
- *      swap the two chips in `live` and reset the drag origin.
+ * Reorder interaction (the reliable one):
+ *   1. **Long-press** a chip — it gets a lifted style (border + tint) and becomes the "pickup".
+ *   2. **Tap** another chip — the pickup and the tapped chip swap positions in `ids`.
+ *   3. Tap the same lifted chip, or tap empty space outside any chip, to cancel the pickup.
+ *
+ * Tap (short) = callback to jump-scroll to that exercise's card.
+ *
+ * The previous version tried long-press + continuous horizontal drag, which fought with
+ * FlowRow's layout pass and the chip visually snapped back to its slot every time the
+ * underlying list reordered. Tap-to-swap is predictable and works.
  */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun FlowRowChips(
     ids: SnapshotStateList<Long>,
@@ -360,9 +368,7 @@ private fun FlowRowChips(
     onTap: (Long) -> Unit,
     @Suppress("UNUSED_PARAMETER") onLongPressDrag: (fromId: Long, toId: Long) -> Unit
 ) {
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    var draggingId by remember { mutableStateOf<Long?>(null) }
-    var dragAccum by remember { mutableStateOf(0f) }
+    var pickedChipId by remember { mutableStateOf<Long?>(null) }
 
     androidx.compose.foundation.layout.FlowRow(
         modifier = Modifier
@@ -372,48 +378,69 @@ private fun FlowRowChips(
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         ids.forEach { id ->
-            val detail = lookup(id)
-                ?: return@forEach
+            val detail = lookup(id) ?: return@forEach
             val isSelected = id == selectedId
-            val isDragging = id == draggingId
-            Box(
-                modifier = Modifier
-                    .offset(x = if (isDragging) dragAccum.toInt().dp else 0.dp)
-                    .pointerInput(id) {
-                        detectDragGesturesAfterLongPress(
-                            onDragStart = {
-                                draggingId = id
-                                dragAccum = 0f
-                            },
-                            onDrag = { change, drag ->
-                                change.consume()
-                                dragAccum += drag.x
-                                val chipWidth = with(density) { 96.dp.toPx() }
-                                if (kotlin.math.abs(dragAccum) > chipWidth / 2f) {
-                                    val direction = if (dragAccum < 0) +1 else -1
-                                    val fromIdx = ids.indexOf(id)
-                                    val toIdx = (fromIdx + direction).coerceIn(0, ids.size - 1)
-                                    if (toIdx != fromIdx) {
-                                        val moving = ids.removeAt(fromIdx)
-                                        ids.add(toIdx, moving)
-                                        dragAccum = 0f
-                                    }
-                                }
-                            },
-                            onDragEnd = { draggingId = null; dragAccum = 0f },
-                            onDragCancel = { draggingId = null; dragAccum = 0f }
-                        )
-                    }
-                    .pointerInput(id) {
-                        detectTapGestures(onTap = { onTap(id) })
-                    }
-            ) {
+            val isPicked = id == pickedChipId
+
+            val borderModifier = if (isPicked) {
+                Modifier.border(
+                    width = 2.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                )
+            } else if (isSelected) {
+                Modifier.border(
+                    width = 2.dp,
+                    color = MaterialTheme.colorScheme.tertiary,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+                )
+            } else Modifier
+
+            // Outer Box hosts both the visible chip and an invisible overlay that owns the
+            // long-press detector. Layering them in a Box lets the overlay use
+            // `matchParentSize` so it exactly covers the chip's hit target without
+            // intercepting short taps (the chip's own onClick fires first).
+            Box(modifier = borderModifier) {
                 AssistChip(
-                    onClick = { onTap(id) },
+                    onClick = {
+                        val picked = pickedChipId
+                        when {
+                            picked == null -> onTap(id)
+                            picked == id -> pickedChipId = null  // cancel pickup
+                            else -> {
+                                // Swap picked with this chip.
+                                val fromIdx = ids.indexOf(picked)
+                                val toIdx = ids.indexOf(id)
+                                if (fromIdx >= 0 && toIdx >= 0 && fromIdx != toIdx) {
+                                    val moving = ids.removeAt(fromIdx)
+                                    ids.add(toIdx, moving)
+                                }
+                                pickedChipId = null
+                            }
+                        }
+                    },
                     label = { Text(detail.exerciseName) },
-                    leadingIcon = if (isSelected) {
-                        { Icon(Icons.Filled.DragHandle, contentDescription = null) }
-                    } else null
+                    leadingIcon = when {
+                        isPicked -> { { Icon(Icons.Filled.DragIndicator, contentDescription = null) } }
+                        isSelected -> { { Icon(Icons.Filled.DragHandle, contentDescription = null) } }
+                        else -> null
+                    }
+                )
+                // Transparent overlay capturing long-press. Does not block clicks because
+                // `detectTapGestures` only triggers `onLongPress` after the long-press
+                // timer fires (short taps don't fire it). The chip's onClick handles the
+                // short-tap case.
+                androidx.compose.foundation.layout.Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .pointerInput(id, pickedChipId) {
+                            detectTapGestures(
+                                onLongPress = {
+                                    if (pickedChipId == null) pickedChipId = id
+                                    else if (pickedChipId == id) pickedChipId = null
+                                }
+                            )
+                        }
                 )
             }
         }
@@ -447,23 +474,33 @@ private fun ExerciseLogCard(
 ) {
     val scope = rememberCoroutineScope()
 
-    val existingSets by vm.setsOf(detail.sessionExerciseId).collectAsState(initial = emptyList())
+    // Setting definitions for this exercise (Seat Height, Chest Pad Depth, etc.) — observed
+    // so the inline-settings header shows the live per-machine preferred values, and edits
+    // persist across all routines/workouts.
     val settingDefs by vm.settingsFor(detail.exerciseId).collectAsState(initial = emptyList())
 
-    // Mirror DB sets into local rows.  Reset ONLY when the EXISTING-SETS LIST CHANGES;
-    // never reset due to recompositions (otherwise tapping a row blows it away).
+    // We need direct repo access to await the Flow's FIRST emission before seeding `rows`.
+    val repo = vm.repo
+
+    // Mirror DB sets into local rows. We DON'T use `collectAsState(initial = emptyList())`
+    // because the empty initial value is indistinguishable from "this exercise has no sets
+    // yet" — which used to cause us to seed a dummy set row that was then clobbered when
+    // the real sets arrived. Instead, we kick off a coroutine that awaits the Flow's
+    // first emit and only THEN seeds rows.
     var hasInitialised by remember(detail.sessionExerciseId) { mutableStateOf(false) }
     val rows = remember(detail.sessionExerciseId) { mutableStateListOf<SetRowState>() }
-    LaunchedEffect(detail.sessionExerciseId, existingSets) {
-        if (!hasInitialised && existingSets.isEmpty()) {
+    LaunchedEffect(detail.sessionExerciseId) {
+        if (hasInitialised) return@LaunchedEffect
+        // Await the first emission of the Room Flow so we know whether the DB has any sets
+        // for this exercise.
+        val first = repo.sets(detail.sessionExerciseId).first()
+        if (first.isEmpty()) {
             rows.add(SetRowState(setNumber = 1))
-            hasInitialised = true
-        } else if (!hasInitialised && existingSets.isNotEmpty()) {
+        } else {
             rows.clear()
-            existingSets.forEach { rows.add(SetRowState.fromExisting(it)) }
-            hasInitialised = true
+            first.forEach { rows.add(SetRowState.fromExisting(it)) }
         }
-        // Subsequent DB emissions don't overwrite rows — those are the user's edits.
+        hasInitialised = true
     }
 
     var settingsExpanded by remember(detail.sessionExerciseId) { mutableStateOf(false) }

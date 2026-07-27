@@ -1,6 +1,8 @@
 package com.gymlog.app.ui.screens
 
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,14 +13,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DragIndicator
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -29,6 +33,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -92,20 +97,39 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
     }
 
     Scaffold(
-        topBar = { ScreenTopBar("Edit: $presetName", onBack = { navController.popBackStack() }) }
+        topBar = {
+            ScreenTopBar(
+                "Edit: $presetName",
+                onBack = { navController.popBackStack() },
+                actions = {
+                    // "Done" — returns to the previous screen. All edits are already
+                    // persisted (we save inline on every change), so "Done" just navigates
+                    // back rather than saving again. The Save-order button below persists
+                    // the user-driven reorder.
+                    TextButton(onClick = { navController.popBackStack() }) {
+                        Text("Done")
+                    }
+                }
+            )
+        }
     ) { inner ->
         Column(modifier = Modifier.fillMaxSize().padding(inner).padding(16.dp)) {
             if (orderedItems.isEmpty()) {
                 EmptyHint("No exercises yet. Tap + Add exercise below.")
             }
+            // Pickup-id for tap-to-swap reorder. Long-press a card → it becomes picked;
+            // tapping another card swaps them; tapping the picked card again cancels.
+            var pickedPresetExerciseId by remember { mutableStateOf<Long?>(null) }
+
             LazyColumn(modifier = Modifier.weight(1f)) {
                 itemsIndexed(
                     items = orderedItems,
                     key = { _, it -> it.presetExerciseId }
                 ) { idx, item ->
+                    val isPicked = item.presetExerciseId == pickedPresetExerciseId
                     PresetExerciseRow(
                         item = item,
-                        isDragging = false,
+                        isPicked = isPicked,
                         onRemove = {
                             scope.launch {
                                 vm.removePresetExercise(
@@ -116,16 +140,34 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                                     )
                                 )
                                 orderedItems.remove(item)
+                                if (pickedPresetExerciseId == item.presetExerciseId) {
+                                    pickedPresetExerciseId = null
+                                }
                             }
                         },
-                        onReorderByIndex = { fromId, direction ->
-                            val from = orderedItems.indexOfFirst { it.presetExerciseId == fromId }
-                            val to = (from + direction).coerceIn(0, orderedItems.size - 1)
-                            if (from >= 0 && from != to) {
-                                val moving = orderedItems.removeAt(from)
-                                orderedItems.add(to, moving)
+                        onTogglePick = {
+                            // Long-press toggles pickup. If a different row is already
+                            // picked, cancel that and pick this one instead.
+                            pickedPresetExerciseId =
+                                if (isPicked) null else item.presetExerciseId
+                        },
+                        onSwapWithPicked = {
+                            val picked = pickedPresetExerciseId
+                            when {
+                                picked == null -> Unit  // tap on its own does nothing
+                                picked == item.presetExerciseId -> pickedPresetExerciseId = null
+                                else -> {
+                                    val fromIdx = orderedItems.indexOfFirst { it.presetExerciseId == picked }
+                                    val toIdx = idx
+                                    if (fromIdx >= 0 && fromIdx != toIdx) {
+                                        val moving = orderedItems.removeAt(fromIdx)
+                                        orderedItems.add(toIdx, moving)
+                                    }
+                                    pickedPresetExerciseId = null
+                                }
                             }
-                        }
+                        },
+                        onDragByIndex = { /* unused in tap-to-swap model */ }
                     )
                 }
             }
@@ -180,15 +222,13 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
                         defaultSets = spec.defaultSets,
                         notes = encodeDefaultsInNotes(spec.settingsDefaults)
                     )
-                    // Read upstream again so the new row appears with its joined fields,
-                    // then append it to local orderedItems.
-                    val refreshed = vm.presetExercises(presetId).let { flow ->
-                        var last = emptyList<com.gymlog.app.data.PresetExerciseJoined>()
-                        flow.collect { last = it }
-                        last
-                    }
-                    val new = refreshed.firstOrNull { it.presetExerciseId == newId }
-                    if (new != null) orderedItems.add(new)
+                    // Refresh the local ordered list so the new row appears immediately.
+                    // We pull the upstream Flow's current value (not a never-terminating
+                    // `flow.collect { … }`, which used to hang here forever and prevent
+                    // `showAdd = false` from ever running — meaning the dialog stayed open).
+                    val refreshed = vm.presetExercisesList(presetId)
+                    orderedItems.clear()
+                    orderedItems.addAll(refreshed)
                     showAdd = false
                 }
             }
@@ -197,44 +237,61 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
 }
 
 /**
- * Card row showing one PresetExercise with drag-to-reorder (long-press + horizontal swipe).
- * The actual reorder is done by the parent (it has access to the master list).
+ * Card row showing one PresetExercise.
+ *
+ * Reorder interaction (the reliable one):
+ *   - Long-press the card — it becomes "picked" with a coloured border.
+ *   - Tap another card to swap positions with it. Tap the picked card again to cancel.
+ *   - Long-press a card while one is already picked also cancels.
+ *
+ * The previous version tried long-press + continuous horizontal drag, which fought with
+ * the parent LazyColumn and the row visually snapped back to its slot after each swap.
+ * Tap-to-swap is predictable and works in any list layout.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun PresetExerciseRow(
     item: com.gymlog.app.data.PresetExerciseJoined,
-    isDragging: Boolean,
+    isPicked: Boolean,
     onRemove: () -> Unit,
-    onReorderByIndex: (fromId: Long, direction: Int) -> Unit
+    onTogglePick: () -> Unit,
+    onSwapWithPicked: () -> Unit,
+    onDragByIndex: (direction: Int) -> Unit
 ) {
-    var dragAccum by remember { mutableStateOf(0f) }
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val threshold = with(density) { 60.dp.toPx() }
+    val borderColor = if (isPicked) MaterialTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.outlineVariant
+    val borderWidth = if (isPicked) 2.dp else 1.dp
 
-    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp)
+            .border(
+                width = borderWidth,
+                color = borderColor,
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+            )
+            .pointerInput(item.presetExerciseId) {
+                detectTapGestures(
+                    onLongPress = { onTogglePick() }
+                )
+            }
+            .clickable {
+                onSwapWithPicked()
+            }
+    ) {
         Row(
-            modifier = Modifier
-                .padding(12.dp)
-                .fillMaxWidth()
-                .pointerInput(item.presetExerciseId) {
-                    detectDragGesturesAfterLongPress(
-                        onDragStart = { dragAccum = 0f },
-                        onDrag = { change, drag ->
-                            change.consume()
-                            dragAccum += drag.x
-                            if (kotlin.math.abs(dragAccum) > threshold) {
-                                val direction = if (dragAccum < 0) -1 else 1
-                                onReorderByIndex(item.presetExerciseId, direction)
-                                dragAccum = 0f
-                            }
-                        },
-                        onDragEnd = { dragAccum = 0f },
-                        onDragCancel = { dragAccum = 0f }
-                    )
-                },
+            modifier = Modifier.padding(12.dp).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (isPicked) {
+                Icon(
+                    Icons.Filled.DragIndicator,
+                    contentDescription = "Picked",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(8.dp))
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Text(item.exerciseName, style = MaterialTheme.typography.titleMedium)
                 Text(describePresetEntry(item), style = MaterialTheme.typography.bodySmall)
@@ -460,20 +517,21 @@ private fun encodeDefaultsInNotes(defaults: Map<String, String>): String {
  */
 private fun describePresetEntry(item: com.gymlog.app.data.PresetExerciseJoined): String {
     val defaults = parseDefaultsFromNotes(item.presetNotes ?: "")
-    val sets = "${item.defaultSets} set${if (item.defaultSets != 1) "s" else ""}"
     val main = when (item.exerciseCategory) {
         ExerciseCategory.CARDIO -> {
             val speed = defaults["Speed"] ?: defaults["Resistance"] ?: "—"
             val incline = defaults["Incline"]
-            val parts = buildList {
+            buildList {
                 add("Speed $speed")
                 if (incline != null) add("Incline $incline")
-            }
-            if (parts.isEmpty()) sets else "${parts.joinToString(" / ")} • $sets"
+            }.joinToString(" / ")
         }
-        ExerciseCategory.CALISTHENICS ->
+        ExerciseCategory.CALISTHENICS -> {
+            val sets = "${item.defaultSets} set${if (item.defaultSets != 1) "s" else ""}"
             "${item.defaultReps ?: "—"} reps • $sets"
+        }
         else -> {
+            val sets = "${item.defaultSets} set${if (item.defaultSets != 1) "s" else ""}"
             val weight = item.defaultWeight
             val reps = item.defaultReps ?: "—"
             if (weight == null) "$reps reps • $sets" else "${weight.toInt()} lb × $reps reps • $sets"
