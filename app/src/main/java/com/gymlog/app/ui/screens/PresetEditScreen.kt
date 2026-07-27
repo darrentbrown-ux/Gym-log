@@ -43,6 +43,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.gymlog.app.data.Exercise
 import com.gymlog.app.ui.GymLogViewModel
+import com.gymlog.app.ui.components.DropdownField
 import com.gymlog.app.ui.components.ScreenTopBar
 import kotlinx.coroutines.launch
 
@@ -114,24 +115,19 @@ fun PresetEditScreen(navController: NavHostController, padding: PaddingValues, p
             title = { Text("Add exercise to routine") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ExposedDropdownMenuBox(
-                        expanded = dropdownExpanded,
-                        onExpandedChange = { dropdownExpanded = !dropdownExpanded }
-                    ) {
-                        OutlinedTextField(
-                            value = pickedExercise?.name ?: "Select exercise",
-                            onValueChange = {},
-                            readOnly = true,
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(dropdownExpanded) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor()
-                        )
-                        allExercises.forEach { ex ->
-                            DropdownMenuItem(
-                                text = { Text("${ex.name} (${ex.category.label})") },
-                                onClick = { pickedExercise = ex; dropdownExpanded = false }
-                            )
-                        }
-                    }
+                    DropdownField(
+                        label = "Exercise",
+                        value = pickedExercise?.name ?: "Select exercise",
+                        options = allExercises.map { "${it.name} (${it.category.label})" },
+                        onSelected = { picked ->
+                            val matchLabel = allExercises.firstOrNull {
+                                "${it.name} (${it.category.label})" == picked
+                            }
+                            pickedExercise = matchLabel
+                            dropdownExpanded = false
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
                     OutlinedTextField(defWeight, { defWeight = it }, label = { Text("Default weight (lb)") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(defReps, { defReps = it }, label = { Text("Default reps") }, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(defSets, { defSets = it }, label = { Text("Default sets") }, modifier = Modifier.fillMaxWidth())

@@ -33,6 +33,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.gymlog.app.ui.GymLogViewModel
 import com.gymlog.app.ui.Screen
+import com.gymlog.app.ui.components.DropdownField
 import com.gymlog.app.ui.components.ScreenTopBar
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -64,29 +65,21 @@ fun NewSessionScreen(navController: NavHostController, padding: PaddingValues, p
         ) {
             Text(dateLabel, style = MaterialTheme.typography.bodyLarge)
 
-            ExposedDropdownMenuBox(
-                expanded = expanded,
-                onExpandedChange = { expanded = !expanded }
-            ) {
-                val selected = presets.firstOrNull { it.id == selectedPresetId }
-                OutlinedTextField(
-                    value = selected?.name ?: "Empty / blank routine",
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Pre-fill from routine") },
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-                    modifier = Modifier.fillMaxWidth().menuAnchor()
-                )
-                DropdownMenuItem(text = { Text("None — start blank") }, onClick = {
-                    selectedPresetId = null; expanded = false
-                })
-                presets.forEach { p ->
-                    DropdownMenuItem(text = { Text(p.name) }, onClick = {
-                        selectedPresetId = p.id; expanded = false
+            DropdownField(
+                label = "Pre-fill from routine",
+                value = presets.firstOrNull { it.id == selectedPresetId }?.name ?: "Empty / blank routine",
+                options = listOf("None — start blank") + presets.map { it.name },
+                onSelected = { picked ->
+                    if (picked == "None — start blank") {
+                        selectedPresetId = null
+                    } else {
+                        val p = presets.first { it.name == picked }
+                        selectedPresetId = p.id
                         if (name.isBlank()) name = p.name
-                    })
-                }
-            }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
 
             OutlinedTextField(
                 value = name,

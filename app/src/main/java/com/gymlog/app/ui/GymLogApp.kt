@@ -26,7 +26,9 @@ import com.gymlog.app.ui.screens.ExerciseDetailScreen
 import com.gymlog.app.ui.screens.ExerciseNewScreen
 import com.gymlog.app.ui.screens.ExercisesScreen
 import com.gymlog.app.ui.screens.HomeScreen
+import com.gymlog.app.ui.screens.NewExercisePrefill
 import com.gymlog.app.ui.screens.NewSessionScreen
+import com.gymlog.app.data.ExerciseCategory
 import com.gymlog.app.ui.screens.PresetDetailScreen
 import com.gymlog.app.ui.screens.PresetEditScreen
 import com.gymlog.app.ui.screens.PresetsScreen
@@ -64,7 +66,21 @@ fun GymLogApp() {
         ) {
             composable(Screen.Home.route) { HomeScreen(navController, padding) }
             composable(Screen.Exercises.route) { ExercisesScreen(navController, padding) }
-            composable(Screen.ExerciseNew.route) { ExerciseNewScreen(navController, padding) }
+            composable(
+                Screen.ExerciseNew.route,
+                arguments = listOf(
+                    navArgument("prefillName") { type = NavType.StringType; defaultValue = "_"; nullable = false },
+                    navArgument("prefillCategory") { type = NavType.StringType; defaultValue = "_"; nullable = false }
+                )
+            ) { entry ->
+                val rawName = entry.arguments?.getString("prefillName") ?: "_"
+                val rawCat = entry.arguments?.getString("prefillCategory") ?: "_"
+                val prefill = if (rawName == "_" || rawCat == "_") null else {
+                    val cat = runCatching { ExerciseCategory.valueOf(rawCat) }.getOrNull()
+                    if (cat != null) NewExercisePrefill(rawName, cat) else null
+                }
+                ExerciseNewScreen(navController, padding, prefill)
+            }
             composable(
                 Screen.ExerciseDetail.route,
                 arguments = listOf(navArgument("id") { type = NavType.LongType })

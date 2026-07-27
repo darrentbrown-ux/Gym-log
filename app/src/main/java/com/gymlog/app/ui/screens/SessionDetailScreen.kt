@@ -59,6 +59,7 @@ import com.gymlog.app.data.MachineSettingDef
 import com.gymlog.app.data.SessionExerciseDetail
 import com.gymlog.app.data.SessionSet
 import com.gymlog.app.ui.GymLogViewModel
+import com.gymlog.app.ui.components.DropdownField
 import com.gymlog.app.ui.components.KeyValueRow
 import com.gymlog.app.ui.components.ScreenTopBar
 import kotlinx.coroutines.launch
@@ -159,31 +160,16 @@ fun SessionDetailScreen(navController: NavHostController, padding: PaddingValues
             title = { Text("Add exercise") },
             text = {
                 Column {
-                    ExposedDropdownMenuBox(
-                        expanded = addExpanded,
-                        onExpandedChange = { addExpanded = !addExpanded }
-                    ) {
-                        OutlinedTextField(
-                            value = pickedExercise?.name ?: "Choose…",
-                            onValueChange = {},
-                            readOnly = true,
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(addExpanded) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor()
-                        )
-                        allExercises.groupBy { it.category }.forEach { (cat, items) ->
-                            Text(
-                                cat.label,
-                                style = MaterialTheme.typography.labelMedium,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-                            )
-                            items.forEach { ex ->
-                                DropdownMenuItem(
-                                    text = { Text(ex.name) },
-                                    onClick = { pickedExercise = ex; addExpanded = false }
-                                )
-                            }
-                        }
-                    }
+                    DropdownField(
+                        label = "Exercise",
+                        value = pickedExercise?.name ?: "Choose…",
+                        options = allExercises.map { it.name },
+                        onSelected = { picked ->
+                            pickedExercise = allExercises.firstOrNull { it.name == picked }
+                            addExpanded = false
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             },
             confirmButton = {
