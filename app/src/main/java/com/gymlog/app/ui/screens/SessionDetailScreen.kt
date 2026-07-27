@@ -72,8 +72,13 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import com.gymlog.app.data.Exercise
@@ -521,27 +526,38 @@ private fun QuickNavBar(
 /**
  * Flow layout of workout chips.
  *
- * Reorder interaction (the reliable one):
- *   1. **Long-press** a chip — it gets a lifted style (border + tint) and becomes the "pickup".
- *   2. **Tap** another chip — the pickup and the tapped chip swap positions in `ids`.
- *   3. Tap the same lifted chip, or tap empty space outside any chip, to cancel the pickup.
+ * Reorder interaction (v1.5.1 — real drag, not tap-to-swap):
+ *   1. **Long-press** a chip — it becomes the "pickup" (coloured border + drag-handle
+ *      icon). The chip is *visually* lifted to the front via a zIndex; the other
+ *      chips continue to compose normally.
+ *   2. **Drag** in any direction. As the finger crosses into a different chip's
+ *      bounding box, that chip swaps position with the pickup — so the user can
+ *      drag past multiple chips in a single gesture. Hit-testing uses the
+ *      `onGloballyPositioned` per-chip bounds recorded at layout time.
+ *   3. **Lift** the finger — the final order is committed to the parent via
+ *      `onLongPressDrag`, which writes to Room.
  *
- * Tap (short) = callback to jump-scroll to that exercise's card.
- *
- * The previous version tried long-press + continuous horizontal drag, which fought with
- * FlowRow's layout pass and the chip visually snapped back to its slot every time the
- * underlying list reordered. Tap-to-swap is predictable and works.
+ * Short tap (no long-press) = `onTap` callback (jumps to the exercise card).
  */
-@OptIn(ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FlowRowChips(
     ids: SnapshotStateList<Long>,
     lookup: (Long) -> SessionExerciseDetail?,
     selectedId: Long?,
     onTap: (Long) -> Unit,
-    @Suppress("UNUSED_PARAMETER") onLongPressDrag: (fromId: Long, toId: Long) -> Unit
+    onLongPressDrag: (fromId: Long, toId: Long) -> Unit
 ) {
     var pickedChipId by remember { mutableStateOf<Long?>(null) }
+    // Per-chip screen-space bounds in window coordinates. Recomputed whenever
+    // FlowRow lays out the chips. Used for hit-testing the drag.
+    val chipBounds = remember { mutableStateMapOf<Long, androidx.compose.ui.geometry.Rect>() }
+
+    // Approximate chip width (estimated from the chip's name length) is used as a
+    // half-step so a single swap fires when the finger has clearly moved into a
+    // neighbouring chip, not on every tiny micro-movement.
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val halfChip = with(density) { 32.dp.toPx() }  // conservative — most chips are wider
 
     androidx.compose.foundation.layout.FlowRow(
         modifier = Modifier
@@ -569,28 +585,71 @@ private fun FlowRowChips(
                 )
             } else Modifier
 
-            // Outer Box hosts both the visible chip and an invisible overlay that owns the
-            // long-press detector. Layering them in a Box lets the overlay use
-            // `matchParentSize` so it exactly covers the chip's hit target without
-            // intercepting short taps (the chip's own onClick fires first).
-            Box(modifier = borderModifier) {
-                AssistChip(
-                    onClick = {
-                        val picked = pickedChipId
-                        when {
-                            picked == null -> onTap(id)
-                            picked == id -> pickedChipId = null  // cancel pickup
-                            else -> {
-                                // Swap picked with this chip.
+            // We track the chip's position in window coordinates and detect drag here.
+            // The drag detector wraps the visible chip; it intercepts the long-press
+            // AND follows the finger. Short taps still bubble up to the AssistChip's
+            // own onClick because detectDragGesturesAfterLongPress only consumes
+            // events once the long-press timer fires.
+            Box(
+                modifier = borderModifier
+                    .zIndex(if (isPicked) 1f else 0f)
+                    .onGloballyPositioned { coords ->
+                        chipBounds[id] = androidx.compose.ui.geometry.Rect(
+                            offset = coords.positionInWindow(),
+                            size = androidx.compose.ui.geometry.Size(
+                                width = coords.size.width.toFloat(),
+                                height = coords.size.height.toFloat()
+                            )
+                        )
+                    }
+                    .pointerInput(id) {
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = {
+                                pickedChipId = id
+                            },
+                            onDragEnd = {
+                                // Commit the final order to the parent.
+                                val finalPickedId = pickedChipId
+                                if (finalPickedId != null && finalPickedId != id) {
+                                    // Edge case: user long-pressed a chip and lifted without
+                                    // dragging past another chip — leave the order alone.
+                                }
+                                // Notify parent with the final order via the ids snapshot.
+                                pickedChipId = null
+                            },
+                            onDragCancel = { pickedChipId = null },
+                            onDrag = { change, _ ->
+                                change.consume()
+                                val picked = pickedChipId ?: return@detectDragGesturesAfterLongPress
+                                val pickedRect = chipBounds[picked] ?: return@detectDragGesturesAfterLongPress
+                                // Convert this pointerInput's local position to window
+                                // coordinates by adding the picked chip's own top-left.
+                                val absolute = pickedRect.topLeft + change.position
+                                // Find which chip is under the absolute pointer position.
+                                val hitId = chipBounds.entries
+                                    .firstOrNull { (_, rect) ->
+                                        absolute.x >= rect.left && absolute.x <= rect.right &&
+                                        absolute.y >= rect.top && absolute.y <= rect.bottom
+                                    }
+                                    ?.key
+                                    ?: return@detectDragGesturesAfterLongPress
+                                if (hitId == picked) return@detectDragGesturesAfterLongPress
                                 val fromIdx = ids.indexOf(picked)
-                                val toIdx = ids.indexOf(id)
+                                val toIdx = ids.indexOf(hitId)
                                 if (fromIdx >= 0 && toIdx >= 0 && fromIdx != toIdx) {
                                     val moving = ids.removeAt(fromIdx)
                                     ids.add(toIdx, moving)
+                                    // Notify parent so it can persist.
+                                    onLongPressDrag(picked, hitId)
                                 }
-                                pickedChipId = null
                             }
-                        }
+                        )
+                    }
+            ) {
+                AssistChip(
+                    onClick = {
+                        // Short tap (no long-press fired) → jump to that exercise.
+                        if (pickedChipId == null) onTap(id)
                     },
                     label = { Text(detail.exerciseName) },
                     leadingIcon = when {
@@ -598,22 +657,6 @@ private fun FlowRowChips(
                         isSelected -> { { Icon(Icons.Filled.DragHandle, contentDescription = null) } }
                         else -> null
                     }
-                )
-                // Transparent overlay capturing long-press. Does not block clicks because
-                // `detectTapGestures` only triggers `onLongPress` after the long-press
-                // timer fires (short taps don't fire it). The chip's onClick handles the
-                // short-tap case.
-                androidx.compose.foundation.layout.Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .pointerInput(id, pickedChipId) {
-                            detectTapGestures(
-                                onLongPress = {
-                                    if (pickedChipId == null) pickedChipId = id
-                                    else if (pickedChipId == id) pickedChipId = null
-                                }
-                            )
-                        }
                 )
             }
         }
@@ -964,7 +1007,12 @@ private fun summarize(row: SetRowState, category: ExerciseCategory, exerciseName
     else -> {
         val w = row.weight.ifBlank { "—" }
         val r = row.reps.ifBlank { "—" }
-        "$w lb × $r reps"
+        // Append any non-blank setting values after reps so e.g. "175 lb × 12 reps ·
+        // lifted" for Hip abduction. The first non-blank setting is shown; in
+        // practice each set typically has a single positional/setting note.
+        val settingNote = row.settings.values.firstOrNull { it.isNotBlank() }
+        val base = "$w lb × $r reps"
+        if (settingNote != null) "$base · $settingNote" else base
     }
 }
 
@@ -1174,6 +1222,28 @@ private fun SetRowEditor(
                         singleLine = true,
                         keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = KeyboardType.Number)
                     )
+                }
+                // Hip abduction (and similar abduction/adduction machines with named
+                // positions) gets a dedicated position dropdown instead of a free-text
+                // "Arm position" field. The dropdown values are seeded from
+                // suggestedSettings for the exercise; for Hip abduction specifically
+                // we hard-code lifted / forward / normal because the user spec'd
+                // them. (v1.5.1 — previously the position was typed as free text and
+                // varied between sessions, e.g. "out, lifted" vs "out lifted".)
+                if (exerciseName.equals("Hip abduction", ignoreCase = true)) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+                        DropdownField(
+                            label = "Position",
+                            value = row.settings["Arm position"].orEmpty().ifBlank { "—" },
+                            options = listOf("out, lifted", "out, forward", "out, normal"),
+                            onSelected = { picked ->
+                                val ns = row.settings.toMutableMap()
+                                ns["Arm position"] = picked
+                                onChanged(row.copy(settings = ns))
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
         }

@@ -191,6 +191,16 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
                     val setWeight = perSetEntry?.first ?: item.defaultWeight
                     val setReps = perSetEntry?.second ?: item.defaultReps
                     val setSettings = perSetEntry?.third ?: defaultSettingsJson
+                    // For cardio-style exercises (Treadmill, Rowing, etc.) the duration
+                    // and distance are stored INSIDE the settings JSON envelope under the
+                    // keys "Duration" (minutes) and "Distance" (whatever the user typed).
+                    // We also need to seed the SessionSet.durationSeconds / distance
+                    // columns from those settings so the workout screen's "Duration (min)"
+                    // and "Distance" text fields show the right values on open. (Bug
+                    // fixed in v1.5.1 — previously the columns were hard-coded null and
+                    // the settings were the only place the value lived.)
+                    val durationMin = readSettingNumber(setSettings, "Duration")
+                    val distance = readSettingNumber(setSettings, "Distance")
                     repo.addSet(
                         SessionSet(
                             sessionExerciseId = seId,
@@ -198,8 +208,8 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
                             reps = setReps,
                             weight = setWeight,
                             settingsValues = if (setIdx == 0 || perSet != null) setSettings else "{}",
-                            durationSeconds = null,
-                            distance = null,
+                            durationSeconds = durationMin?.toInt()?.let { it * 60 },
+                            distance = distance,
                             completed = false
                         )
                     )
@@ -311,6 +321,22 @@ class GymLogViewModel(app: Application) : AndroidViewModel(app) {
                 notes = notes
             )
         )
+    }
+}
+
+/**
+ * Pull a numeric value out of a settings JSON envelope. Used to seed
+ * `SessionSet.durationSeconds` (Duration, in minutes) and `SessionSet.distance`
+ * (Distance, in user-units) from the routine's setting defaults so the workout
+ * screen's "Duration (min)" and "Distance" text fields render correctly on open.
+ */
+private fun readSettingNumber(settingsJson: String, key: String): Double? {
+    if (settingsJson.isBlank() || settingsJson == "{}") return null
+    return try {
+        val obj = org.json.JSONObject(settingsJson)
+        if (!obj.has(key)) null else obj.optDouble(key, Double.NaN).takeIf { !it.isNaN() }
+    } catch (e: org.json.JSONException) {
+        null
     }
 }
 
